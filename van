@@ -1,0 +1,32 @@
+==============================
+dosyayı incele
+dosya sadece publick api ile veri alacak endpointleri içerecek şekilde tasarladı
+- eksik endpoint var mı
+- turarlı bütünlük oluşturacak şekilde class yada alt claslara ayrılabilir mi
+- import eksiklikleri/ sorunları var mı
+-  Tek config (bot/config) olacak, daha sürdürülebilir ve daha az hata riski taşır
+- class BinanceConfig:
+    class Public:
+        class Spot:
+            enabled = True
+            timeout = 10
+            
+        class Futures:
+            enabled = True  
+            timeout = 10
+            
+    class Private:
+        # ... private ayarlar
+        
+        şeklinde class yapısında olacak
+        
+        
+async yapı+ async/await pattern'ine uygun + aiogram 3.x e uygun + Router pattern yapıda 
++  PEP8 + type hints + docstring +singleton + logging olacak yapıda
+Kod tekrarının olmayan + çakışmayan + açılış/ kapanışları tam
+Hafıza sızıntısı olmayan +  beklenmedik davranışlar veya performans sorunları olmayan
+(Config yönetimi entegre eklenmesi gerekenler varsa ilgili bölümler)
+
+(gerekiyorsa Pydantic yada pydantic_settings ile uyumlu mu)
+
+==============================
