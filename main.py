@@ -48,7 +48,9 @@ from aiogram.filters import BaseFilter
 from aiogram.types import ErrorEvent
 
 from utils.handler_loader import load_handlers, clear_handler_cache
-from utils.binance.binance_a import get_or_create_binance_api  # ✅ DÜZELTME: Factory fonksiyonunu import et
+#from utils.binance.binance_a import get_or_create_binance_api  # ✅ DÜZELTME: Factory fonksiyonunu import et
+from utils.binance.binance_a import BinanceAggregator
+
 from utils.binance.binance_request import BinanceHTTPClient
 from utils.binance.binance_circuit_breaker import CircuitBreaker
 from config import BotConfig, get_config, get_telegram_token, get_admins
@@ -229,10 +231,13 @@ async def initialize_binance_api() -> Optional[Any]:
         logger.info("🔄 Initializing Binance API...")
         
         # ✅ Async çağrı ve user_id parametresi
-        binance_api_instance = await get_or_create_binance_api(user_id=None)
-        
+        #binance_api_instance = await get_or_create_binance_api(user_id=None)
+        #binance_api_instance = await get_or_create_binance_api(user_id=None)
+        aggregator = BinanceAggregator.get_instance()
+
         logger.info("✅ Binance API initialized successfully")
-        return binance_api_instance
+        #return binance_api_instance
+        return aggregator
         
     except Exception as e:
         logger.error(f"❌ Binance API initialization failed: {e}")
