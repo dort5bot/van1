@@ -1,4 +1,6 @@
 """
+utils/binance/binance_exceptions.py
+v6
 Binance API custom exceptions.
 """
 
@@ -100,8 +102,16 @@ class BinanceRequestError(BinanceError):
 
 
 class BinanceWebSocketError(BinanceError):
-    """Exception raised for WebSocket errors."""
-    pass
+    def __init__(self, message: str, connection_id: Optional[str] = None):
+        self.message = message
+        self.connection_id = connection_id
+        super().__init__(self._format_message())
+    
+    def _format_message(self) -> str:
+        if self.connection_id:
+            return f"WebSocket Error [Connection {self.connection_id}]: {self.message}"
+        return f"WebSocket Error: {self.message}"
+
 
 
 class BinanceRateLimitError(BinanceAPIError):

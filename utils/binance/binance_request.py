@@ -1,10 +1,20 @@
 # utils/binance/binance_request.py
 """
 Enhanced Binance HTTP Client
+Varsayılan olarak bot_api_key, bot_api_secret tut
+get/post çağrılarında api_key/api_secret verilmemişse bot key’leri kullan
+
 - Async aiohttp client with retry, rate limiting, metrics
 - Public + Private endpoint support
 - Dynamic weight handling per endpoint
 - Detailed exception handling with specific error codes
+Public ve Private endpoint destekli, imzalama ve API anahtarı ile kimlik doğrulama var.
+Dinamik ağırlık (weight) takibi ve rate limiting uygulanmış. (Binance API her endpoint için farklı weight verir, bu kod bunu yönetiyor.)
+Retry mantığı ve exponential backoff var. (İstek başarısız olursa tekrar deniyor)
+Timeout ve detaylı hata yönetimi var. (Farklı Binance hata kodlarına özel istisnalar kullanıyor)
+Aiohttp connector limit ayarları ile eşzamanlı bağlantı sınırlandırması yapılabiliyor.
+Metrics (istatistik) toplama için ekstra modül var (MetricsManager) ki bu gerçek kullanımlarda faydalı.
+WebSocket sınıfı
 """
 
 import aiohttp
@@ -16,7 +26,7 @@ import hmac
 import urllib.parse
 import json
 import platform
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Union, Callable, Awaitable
 
 from .binance_constants import BASE_URL, FUTURES_URL, DEFAULT_CONFIG, ENDPOINT_WEIGHT_MAP
 from .binance_exceptions import (
@@ -29,6 +39,8 @@ from .binance_metrics import AdvancedMetrics as MetricsManager
 
 logger = logging.getLogger(__name__)
 
+#from .binance_request import BinanceRequest
+#alias from .binance_request import BinanceHTTPClient as BinanceRequest
 class BinanceHTTPClient:
     """
     Async HTTP client for Binance API with retry logic, dynamic rate limiting, 
@@ -266,3 +278,198 @@ class BinanceHTTPClient:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
+
+
+
+#
+
+class BinanceWSClient:
+    """
+    Async Binance WebSocket client using aiohttp.
+    Supports connect, disconnect, send, receive and auto-reconnect.
+
+    Usage:
+        async with BinanceWSClient() as ws:
+            await ws.connect()
+            await ws.subscribe(['btcusdt@ticker'])
+            async for message in ws:
+                print(message)
+    """
+
+    BASE_WS_URL = "wss://stream.binance.com:9443/ws"
+    BASE_WS_FUTURES_URL = "wss://fstream.binance.com/ws"
+
+    def __init__(
+        self,
+        futures: bool = False,
+        api_key: Optional[str] = None,
+        reconnect_interval: int = 5,
+        on_message: Optional[Callable[[dict], Awaitable[None]]] = None,
+    ):
+        self.futures = futures
+        self.api_key = api_key  # Binance WS genellikle API key istemez, ama private streamler için gerekebilir
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
+        self._reconnect_interval = reconnect_interval
+        self._connected = False
+        self._receive_task: Optional[asyncio.Task] = None
+        self._stop_event = asyncio.Event()
+        self._on_message = on_message
+        self._subscribed_streams = set()
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+            logger.debug("Created new aiohttp ClientSession for WebSocket")
+        return self._session
+
+    async def connect(self):
+        """
+        Connect to Binance WebSocket endpoint.
+        """
+        url = self.BASE_WS_FUTURES_URL if self.futures else self.BASE_WS_URL
+
+        # If you want to open combined streams (multiple streams in one WS connection),
+        # URL is: wss://stream.binance.com:9443/stream?streams=stream1/stream2
+        # Here we open a basic connection, subscribe later.
+
+        session = await self._get_session()
+        self._ws = await session.ws_connect(url)
+        self._connected = True
+        self._stop_event.clear()
+        self._receive_task = asyncio.create_task(self._receive_loop())
+        logger.info(f"Connected to Binance WebSocket at {url}")
+
+    async def disconnect(self):
+        """
+        Close WebSocket connection and session.
+        """
+        self._connected = False
+        self._stop_event.set()
+        if self._receive_task:
+            await self._receive_task
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+            logger.info("WebSocket connection closed")
+        if self._session and not self._session.closed:
+            await self._session.close()
+            logger.info("aiohttp session closed")
+
+    async def _receive_loop(self):
+        """
+        Loop to receive messages and call the callback.
+        Reconnects automatically if connection drops.
+        """
+        while not self._stop_event.is_set():
+            try:
+                async for msg in self._ws:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        if self._on_message:
+                            await self._on_message(data)
+                        else:
+                            logger.debug(f"WS Message received: {data}")
+                    elif msg.type == aiohttp.WSMsgType.CLOSED:
+                        logger.warning("WebSocket closed by server")
+                        break
+                    elif msg.type == aiohttp.WSMsgType.ERROR:
+                        logger.error(f"WebSocket error: {msg.data}")
+                        break
+                # If we get here, WS closed or errored
+                if not self._stop_event.is_set():
+                    logger.warning("WebSocket connection lost, reconnecting...")
+                    await self._reconnect()
+            except Exception as e:
+                logger.error(f"Error in receive loop: {e}")
+                if not self._stop_event.is_set():
+                    await asyncio.sleep(self._reconnect_interval)
+                    await self._reconnect()
+
+    async def _reconnect(self):
+        """
+        Close existing connection and try reconnecting.
+        """
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+        await asyncio.sleep(self._reconnect_interval)
+        await self.connect()
+        # Resubscribe to streams if any
+        if self._subscribed_streams:
+            await self.subscribe(list(self._subscribed_streams))
+
+    async def send(self, message: dict):
+        """
+        Send a JSON message to WebSocket.
+        """
+        if not self._connected or self._ws is None:
+            raise ConnectionError("WebSocket is not connected")
+        await self._ws.send_json(message)
+        logger.debug(f"Sent WS message: {message}")
+
+    async def subscribe(self, streams: list[str]):
+        """
+        Subscribe to one or more streams.
+        Example streams: ['btcusdt@ticker', 'ethusdt@depth']
+
+        Binance expects subscribe message:
+        {
+          "method": "SUBSCRIBE",
+          "params": ["btcusdt@ticker", "ethusdt@depth"],
+          "id": 1
+        }
+        """
+        streams = [s.lower() for s in streams]
+        self._subscribed_streams.update(streams)
+        msg = {
+            "method": "SUBSCRIBE",
+            "params": streams,
+            "id": 1
+        }
+        await self.send(msg)
+        logger.info(f"Subscribed to streams: {streams}")
+
+    async def unsubscribe(self, streams: list[str]):
+        """
+        Unsubscribe from streams.
+        """
+        streams = [s.lower() for s in streams]
+        for s in streams:
+            self._subscribed_streams.discard(s)
+        msg = {
+            "method": "UNSUBSCRIBE",
+            "params": streams,
+            "id": 1
+        }
+        await self.send(msg)
+        logger.info(f"Unsubscribed from streams: {streams}")
+
+    def __aiter__(self):
+        """
+        Async iterator over incoming messages (if no callback provided).
+        """
+        if self._on_message is not None:
+            raise RuntimeError("Cannot use iterator and callback simultaneously")
+        return self._message_generator()
+
+    async def _message_generator(self):
+        """
+        Yalnızca __aiter__ için mesajları queue'ya koyup yield eder.
+        """
+        queue = asyncio.Queue()
+
+        async def on_message(data):
+            await queue.put(data)
+
+        self._on_message = on_message
+
+        while True:
+            msg = await queue.get()
+            yield msg
+
+    async def __aenter__(self):
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.disconnect()
+

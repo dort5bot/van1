@@ -9,7 +9,8 @@ import logging
 import re
 
 from .binance_pr_base import BinancePrivateBase
-from .binance_exceptions import BinanceAPIError, BinanceRequestException, BinanceRateLimitException
+#from .binance_exceptions import BinanceAPIError, BinanceRequestException, BinanceRateLimitException
+from .binance_exceptions import BinanceAPIError, BinanceRequestError, BinanceRateLimitError # BinanceValidationError yoksa çıkar
 
 logger = logging.getLogger(__name__)
 

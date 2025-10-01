@@ -17,7 +17,9 @@ import time
 import logging
 import inspect
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional, Dict
+from collections import OrderedDict
+from typing import Any, Awaitable, Callable, Optional, Dict, Tuple
+
 
 # Kullanıcı tarafı özel exception'larınızdan biri (var sayılıyor)
 from .binance_exceptions import BinanceCircuitBreakerError
@@ -274,3 +276,127 @@ class CircuitBreaker:
             hook(payload)
         except Exception:
             logger.exception("CircuitBreaker hook raised an exception", exc_info=True)
+
+
+
+
+class CircuitBreakerManager:
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        reset_timeout: float = 60.0,
+        half_open_timeout: float = 30.0,
+        max_half_open_calls: int = 1,
+        failure_predicate: Optional[FailurePredicate] = None,
+        on_open: Optional[HookCallable] = None,
+        on_half_open: Optional[HookCallable] = None,
+        on_close: Optional[HookCallable] = None,
+        on_failure: Optional[HookCallable] = None,
+        on_success: Optional[HookCallable] = None,
+        max_cache_size: int = 1000,  # 🔁 LRU cache için maksimum breaker sayısı
+        ttl_seconds: int = 3600,     # 🔁 TTL: circuit breaker 1 saat boyunca kullanılmazsa silinir
+    ):
+        """
+        Args:
+            max_cache_size: CircuitBreaker cache'inde tutulacak maksimum kullanıcı+endpoint sayısı.
+            ttl_seconds: Son erişimden itibaren bu saniye kadar kullanılmayan circuit breaker temizlenir.
+            Diğer args CircuitBreaker config ile aynıdır.
+        """
+        self._lock = asyncio.Lock()
+        self._breaker_map: "OrderedDict[Tuple[str,str], Tuple[CircuitBreaker, float]]" = OrderedDict()
+        # key -> (breaker, last_access_time)
+
+        self._config = {
+            "failure_threshold": failure_threshold,
+            "reset_timeout": reset_timeout,
+            "half_open_timeout": half_open_timeout,
+            "max_half_open_calls": max_half_open_calls,
+            "failure_predicate": failure_predicate,
+            "on_open": on_open,
+            "on_half_open": on_half_open,
+            "on_close": on_close,
+            "on_failure": on_failure,
+            "on_success": on_success,
+        }
+
+        self.max_cache_size = max_cache_size
+        self.ttl_seconds = ttl_seconds
+
+    async def _evict_expired_and_lru(self):
+        """
+        TTL süresi geçen veya LRU sınırını aşan breaker'ları sil.
+        """
+        now = time.time()
+        keys_to_delete = []
+
+        # TTL kontrolü
+        for key, (_, last_access) in self._breaker_map.items():
+            if now - last_access > self.ttl_seconds:
+                keys_to_delete.append(key)
+
+        for key in keys_to_delete:
+            del self._breaker_map[key]
+
+        # LRU kontrolü: max_cache_size aşıyorsa en eski(ilk) elemanları sil
+        while len(self._breaker_map) > self.max_cache_size:
+            self._breaker_map.popitem(last=False)  # first (en eski) elemanı çıkar
+
+    async def get_breaker(self, user_id: str, endpoint: str = "default") -> CircuitBreaker:
+        """
+        Kullanıcı+endpoint bazında breaker objesini döner.
+        Yoksa oluşturur, varsa erişimi günceller (LRU).
+        """
+        key = (user_id, endpoint)
+        async with self._lock:
+            await self._evict_expired_and_lru()
+
+            if key in self._breaker_map:
+                # LRU için order güncelle
+                breaker, _ = self._breaker_map.pop(key)
+                self._breaker_map[key] = (breaker, time.time())
+                return breaker
+
+            # Yeni breaker oluştur
+            name = f"cb:{user_id}:{endpoint}"
+            breaker = CircuitBreaker(name=name, **self._config)
+            self._breaker_map[key] = (breaker, time.time())
+            return breaker
+
+    async def execute(self, user_id: str, endpoint: str, func: Callable[..., Any], *args, **kwargs):
+        """
+        Tek satırda breaker'lı fonksiyon çağrısı (async/sync farketmez)
+        """
+        breaker = await self.get_breaker(user_id, endpoint)
+        return await breaker.execute(func, *args, **kwargs)
+
+    async def force_open(self, user_id: str, endpoint: str = "default"):
+        breaker = await self.get_breaker(user_id, endpoint)
+        await breaker.force_open()
+
+    async def reset(self, user_id: str, endpoint: str = "default"):
+        breaker = await self.get_breaker(user_id, endpoint)
+        await breaker.reset()
+
+    async def remove(self, user_id: str, endpoint: str = "default"):
+        """
+        İsteğe bağlı: belirli bir breaker'ı cache'den tamamen çıkar.
+        """
+        key = (user_id, endpoint)
+        async with self._lock:
+            self._breaker_map.pop(key, None)
+
+    async def cleanup(self):
+        """
+        İsteğe bağlı: dışardan manuel cache temizleme tetiklemesi.
+        """
+        async with self._lock:
+            await self._evict_expired_and_lru()
+
+    def get_all_states(self) -> Dict[str, Dict]:
+        """
+        Breaker durumlarının anlık snapshot'u (sync)
+        """
+        return {
+            f"{user_id}:{endpoint}": breaker.get_state()
+            for (user_id, endpoint), (breaker, _) in self._breaker_map.items()
+        }

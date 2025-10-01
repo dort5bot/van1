@@ -1,10 +1,14 @@
 #utils/binance/binance_constants.py
 """
+v6
 Spot + Futures + Margin hata kodları kapsandı
 Parametre doğrulama fonksiyonları eklendi
 Exception mapping için map_error_code eklendi
 Futures özel interval desteği ayrıldı
+Endpoint path'leri için sabitler eklendi
+WebSocket stream'ler için ters lookup eklendi
 """
+
 """
 Binance API constants, configuration, and validation helpers.
 Uygulama: Spot + Futures + Margin + Testnet desteği
@@ -77,6 +81,41 @@ KLINE_FIELDS: Final[List[str]] = [
 
 
 # =============================================================================
+# Endpoint Paths
+# =============================================================================
+
+# Public Spot Endpoints
+SPOT_PING_ENDPOINT: Final[str] = "/api/v3/ping"
+SPOT_TIME_ENDPOINT: Final[str] = "/api/v3/time"
+SPOT_EXCHANGE_INFO_ENDPOINT: Final[str] = "/api/v3/exchangeInfo"
+SPOT_ORDER_BOOK_ENDPOINT: Final[str] = "/api/v3/depth"
+SPOT_KLINE_ENDPOINT: Final[str] = "/api/v3/klines"
+SPOT_AGG_TRADE_ENDPOINT: Final[str] = "/api/v3/aggTrades"
+SPOT_TICKER_24H_ENDPOINT: Final[str] = "/api/v3/ticker/24hr"
+SPOT_TICKER_PRICE_ENDPOINT: Final[str] = "/api/v3/ticker/price"
+SPOT_TICKER_BOOK_ENDPOINT: Final[str] = "/api/v3/ticker/bookTicker"
+
+# Private Spot Endpoints
+SPOT_ORDER_ENDPOINT: Final[str] = "/api/v3/order"
+SPOT_ORDER_TEST_ENDPOINT: Final[str] = "/api/v3/order/test"
+SPOT_OPEN_ORDERS_ENDPOINT: Final[str] = "/api/v3/openOrders"
+SPOT_ALL_ORDERS_ENDPOINT: Final[str] = "/api/v3/allOrders"
+SPOT_ACCOUNT_ENDPOINT: Final[str] = "/api/v3/account"
+SPOT_MY_TRADES_ENDPOINT: Final[str] = "/api/v3/myTrades"
+
+# Futures Endpoints
+FUTURES_PING_ENDPOINT: Final[str] = "/fapi/v1/ping"
+FUTURES_TIME_ENDPOINT: Final[str] = "/fapi/v1/time"
+FUTURES_EXCHANGE_INFO_ENDPOINT: Final[str] = "/fapi/v1/exchangeInfo"
+FUTURES_ORDER_BOOK_ENDPOINT: Final[str] = "/fapi/v1/depth"
+FUTURES_KLINE_ENDPOINT: Final[str] = "/fapi/v1/klines"
+FUTURES_ACCOUNT_ENDPOINT: Final[str] = "/fapi/v2/account"
+FUTURES_ORDER_ENDPOINT: Final[str] = "/fapi/v1/order"
+FUTURES_POSITION_RISK_ENDPOINT: Final[str] = "/fapi/v2/positionRisk"
+FUTURES_LEVERAGE_BRACKET_ENDPOINT: Final[str] = "/fapi/v1/leverageBracket"
+
+
+# =============================================================================
 # WebSocket Streams
 # =============================================================================
 WS_STREAMS: Final[Dict[str, str]] = {
@@ -90,6 +129,9 @@ WS_STREAMS: Final[Dict[str, str]] = {
     "depth_level": "depth{}",
     "user_data": "userData",
 }
+
+# Reverse lookup for WebSocket streams
+WS_STREAMS_REVERSE: Final[Dict[str, str]] = {v: k for k, v in WS_STREAMS.items()}
 
 
 # =============================================================================
@@ -182,12 +224,31 @@ DEFAULT_CONFIG: Final[Dict[str, Any]] = {
 # Endpoint Weights (Rate Limit Weights)
 # =============================================================================
 ENDPOINT_WEIGHT_MAP: Final[Dict[str, int]] = {
-    "/api/v3/order": 1,
-    "/api/v3/account": 5,
-    "/api/v3/ping": 1,
-    # İhtiyacına göre diğer endpoint ağırlıklarını buraya ekleyebilirsin
+    SPOT_PING_ENDPOINT: 1,
+    SPOT_TIME_ENDPOINT: 1,
+    SPOT_EXCHANGE_INFO_ENDPOINT: 10,
+    SPOT_ORDER_BOOK_ENDPOINT: 1,
+    SPOT_KLINE_ENDPOINT: 1,
+    SPOT_AGG_TRADE_ENDPOINT: 1,
+    SPOT_TICKER_24H_ENDPOINT: 1,
+    SPOT_TICKER_PRICE_ENDPOINT: 1,
+    SPOT_TICKER_BOOK_ENDPOINT: 1,
+    SPOT_ORDER_ENDPOINT: 1,
+    SPOT_ORDER_TEST_ENDPOINT: 1,
+    SPOT_OPEN_ORDERS_ENDPOINT: 1,
+    SPOT_ALL_ORDERS_ENDPOINT: 5,
+    SPOT_ACCOUNT_ENDPOINT: 5,
+    SPOT_MY_TRADES_ENDPOINT: 5,
+    FUTURES_PING_ENDPOINT: 1,
+    FUTURES_TIME_ENDPOINT: 1,
+    FUTURES_EXCHANGE_INFO_ENDPOINT: 1,
+    FUTURES_ORDER_BOOK_ENDPOINT: 1,
+    FUTURES_KLINE_ENDPOINT: 1,
+    FUTURES_ACCOUNT_ENDPOINT: 5,
+    FUTURES_ORDER_ENDPOINT: 1,
+    FUTURES_POSITION_RISK_ENDPOINT: 5,
+    FUTURES_LEVERAGE_BRACKET_ENDPOINT: 1,
 }
-
 
 
 # =============================================================================
@@ -227,4 +288,3 @@ def map_error_code(code: int, message: Optional[str] = None) -> BinanceAPIExcept
     """
     desc = ERROR_CODES.get(code, "UNKNOWN_ERROR")
     return BinanceAPIException(f"[{code}] {desc}. {message or ''}")
-
