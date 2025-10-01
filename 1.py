@@ -1,3 +1,40 @@
+
+
+
+
+
+
+
+
+
+public ve private ayrı alt yapılar olarak tanımlanmalı, ve onların altına spot, futures, margin gibi yapılar mantıklı şekilde oturtulmalı.
+Bu ağaç yapısı:
+Kod okunabilirliğini artırır
+Bakımı ve testleri kolaylaştırır
+Hataların sınırlarını belirler
+Genişletilebilirliği arttırır (örneğin staking, mining kolay eklenebilir)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # bot/config.py
 
 class BinanceAPI:
