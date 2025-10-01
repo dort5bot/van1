@@ -4,6 +4,26 @@ utils/apikey_manager.py
 Async, secure API key manager using SQLite + Fernet encryption.
 Aiogram 3.x ve async uyumludur.
 
+# .env İÇERİĞİ
+# 🔐 ZORUNLU - 32-byte Base64 encoded Fernet key. Şöyle oluşturabilirsin:
+# from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())
+MASTER_KEY=abc123examplekey==
+# 🗂️ OPSİYONEL - Veritabanı dosya yolu
+DATABASE_URL=data/apikeys.db
+# 🗂️Fernet Key Oluşturma (Python ile)
+from cryptography.fernet import Fernet
+print(Fernet.generate_key().decode())
+
+
+not:
+bot/config.py
+apikey_manager.py içinde şöyle kullanırsın:
+
+from config import get_apikey_config
+config = get_apikey_config()
+self.db_path = config.DATABASE_URL
+
+
 ✅ Kullanım Örneği (main.py ya da handler içinde)
 from utils.apikey_manager import APIKeyManager
 
@@ -15,10 +35,6 @@ async def startup():
     creds = await db.get_apikey(user_id=12345)
     print(creds)
     
-    
-İPTAAL- from utils/apikey_utils import get_apikey
-YENİ  from utils/apikey_manager import APIKeyManager
-
 """
 
 import json
@@ -29,7 +45,10 @@ from typing import Optional, Tuple, List
 import aiosqlite
 from cryptography.fernet import Fernet
 
-from config import get_config_sync
+from config import get_apikey_config
+
+config = get_apikey_config()
+#self.db_path = config.DATABASE_URL
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
