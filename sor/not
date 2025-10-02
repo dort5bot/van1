@@ -1,0 +1,13 @@
+ binance_constants.py
+ binance_exceptions.py
+ binance_metrics.py
+ binance_ws_pydantic.py
+ binance_types.py
+
+│   │   ├── binance_a.py	#agredator
+
+
+ binance_circuit_breaker.py  # 2
+ binance_client.py  #1+2
+ binance_request.py  #1+2+3
+ binance_websocket.py  #1 // 1+2+ apimanager
