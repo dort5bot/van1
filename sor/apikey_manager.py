@@ -195,3 +195,52 @@ class APIKeyManager:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM apikeys WHERE created_at < ?", (cutoff,))
             await db.commit()
+
+
+# EKSİK OLAN ÖNEMLİ FONKSİYONLAR:
+
+async def validate_binance_credentials(self, user_id: int) -> bool:
+    """Binance API test ederek geçerliliği kontrol et"""
+    try:
+        api_key, secret_key = await self.get_apikey(user_id)
+        if not api_key or not secret_key:
+            return False
+            
+        # Binance API test isteği
+        client = AsyncClient(api_key, secret_key)
+        await client.get_account()
+        await client.close_connection()
+        return True
+    except Exception as e:
+        logger.error(f"Binance API validation failed for user {user_id}: {e}")
+        return False
+
+async def rotate_keys(self, user_id: int, new_api_key: str, new_secret: str) -> bool:
+    """Key rotation with validation"""
+    if not await self.validate_binance_credentials(user_id):
+        return False
+    
+    await self.add_or_update_apikey(user_id, new_api_key, new_secret)
+    return True
+
+async def get_encrypted_keys_for_usage(self, user_id: int) -> Optional[Tuple[str, str]]:
+    """Usage için decrypt edilmiş key'leri döndürür (geçici olarak)"""
+    # Burada ek güvenlik önlemleri eklenebilir
+    return await self.get_apikey(user_id)
+
+# GÜVENLİK İYİLEŞTİRMELERİ:
+def __init__(self):
+    config = get_apikey_config()
+    self.db_path = config.DATABASE_URL or "data/apikeys.db"
+    
+    # Key validation
+    if not config.MASTER_KEY:
+        raise RuntimeError("MASTER_KEY required")
+    
+    try:
+        self.fernet = Fernet(config.MASTER_KEY.encode())
+        # Test encryption
+        test_data = self._decrypt(self._encrypt("test"))
+        assert test_data == "test"
+    except Exception as e:
+        raise RuntimeError(f"Invalid MASTER_KEY: {e}")
