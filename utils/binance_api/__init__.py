@@ -1,5 +1,4 @@
 """
-binance_api/__init__.py
 Binance API utilities package.
 
 Bu paket:
