@@ -444,6 +444,117 @@ class BinancePBFutures:
         logger.debug("Futures: premium_index %s", symbol)
         data = await self._http.get(FUTURES_PREMIUM_INDEX_ENDPOINT, params=params, futures=True)
         return data
+    
+    
+    # # 📕 BÖLÜM 5: Likidasyon Verileri
+    #5 - FUTURES_LIQUIDATION_ORDERS_ENDPOINT = "/fapi/v1/liquidationOrders"
+    async def liquidation_orders(
+        self,
+        symbol: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        Get force liquidation orders.
+        GET /fapi/v1/liquidationOrders
+        """
+        params: Dict[str, Any] = {"limit": limit}
+        if symbol:
+            params["symbol"] = symbol.upper()
+        logger.debug("Futures: liquidation_orders %s", symbol)
+        data = await self._http.get(FUTURES_LIQUIDATION_ORDERS_ENDPOINT, params=params, futures=True)
+        return data  # type: ignore[return-value]
+    
+
+    async def force_orders(
+        self,
+        symbol: Optional[str] = None,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get force orders.
+        GET /fapi/v1/forceOrders
+
+        Args:
+            symbol (Optional[str]): Symbol to filter by.
+            start_time (Optional[int]): Start timestamp (ms).
+            end_time (Optional[int]): End timestamp (ms).
+            limit (int): Number of results, default 50.
+
+        Returns:
+            List of force orders.
+        """
+        params: Dict[str, Any] = {"limit": int(limit)}
+        if symbol:
+            params["symbol"] = symbol.upper()
+        if start_time:
+            params["startTime"] = int(start_time)
+        if end_time:
+            params["endTime"] = int(end_time)
+
+        logger.debug("Futures: force_orders %s", symbol)
+        data = await self._http.get(FUTURES_FORCE_ORDERS_ENDPOINT, params=params, futures=True)
+        return data  # type: ignore[return-value]
+
+
+    async def all_force_orders(
+        self,
+        symbol: Optional[str] = None,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all force orders.
+        GET /fapi/v1/allForceOrders
+
+        Args:
+            symbol (Optional[str]): Symbol to filter by.
+            start_time (Optional[int]): Start timestamp (ms).
+            end_time (Optional[int]): End timestamp (ms).
+            limit (int): Number of results, default 50.
+
+        Returns:
+            List of all force orders.
+        """
+        params: Dict[str, Any] = {"limit": int(limit)}
+        if symbol:
+            params["symbol"] = symbol.upper()
+        if start_time:
+            params["startTime"] = int(start_time)
+        if end_time:
+            params["endTime"] = int(end_time)
+
+        logger.debug("Futures: all_force_orders %s", symbol)
+        data = await self._http.get(FUTURES_ALL_FORCE_ORDERS_ENDPOINT, params=params, futures=True)
+        return data  # type: ignore[return-value]
+
+
+    async def leverage_bracket(
+        self,
+        symbol: Optional[str] = None
+    ) -> Any:
+        """
+        Get leverage bracket.
+        GET /fapi/v1/leverageBracket
+
+        Args:
+            symbol (Optional[str]): Symbol to filter by.
+
+        Returns:
+            Leverage bracket info.
+        """
+        params = {"symbol": symbol.upper()} if symbol else None
+
+        logger.debug("Futures: leverage_bracket %s", symbol)
+        data = await self._http.get(FUTURES_LEVERAGE_BRACKET_ENDPOINT, params=params, futures=True)
+        return data
+
+    
+    #
+
+
 
  
  
@@ -453,4 +564,23 @@ Public Future Endpointleri: Evet, sınıf futures market verilerini sağlayan ta
 Görevleri: Piyasa verisi sağlamak (emir defteri, mumlar, fiyatlar), piyasa istatistikleri (open interest, funding rate), trader davranış analizleri (long/short oranları) gibi.
 İç Kullanım: Bu veri metotları piyasa durumu izleme, grafik/chart oluşturma, trading stratejileri geliştirme, risk ve likidite analizi gibi uygulamalarda kullanılabilir.
 Tüm endpoint URL’lerini binance_constants.py içinde tanımlı oradan import edildi.
+✅ Örnek Olarak Dosyada Bulunanlar:
+
+/fapi/v1/ping
+/fapi/v1/time
+/fapi/v1/exchangeInfo
+/fapi/v1/depth (order_book)
+/fapi/v1/klines
+/fapi/v1/markPriceKlines
+/fapi/v1/fundingRate
+/fapi/v1/ticker/24hr,
+/fapi/v1/ticker/price,
+/fapi/v1/ticker/bookTicker
+/fapi/v1/openInterest
+/futures/data/openInterestHist
+/futures/data/topLongShortPositionRatio
+/futures/data/globalLongShortAccountRatio
+/fapi/v1/liquidationOrders
+
+
 """

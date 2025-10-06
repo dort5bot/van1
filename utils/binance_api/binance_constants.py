@@ -158,6 +158,7 @@ FUTURES_ORDER_ENDPOINT: Final[str] = "/fapi/v1/order"
 FUTURES_POSITION_RISK_ENDPOINT: Final[str] = "/fapi/v2/positionRisk"
 FUTURES_PREMIUM_INDEX_ENDPOINT = "/fapi/v1/premiumIndex"
 FUTURES_LEVERAGE_BRACKET_ENDPOINT: Final[str] = "/fapi/v1/leverageBracket"
+FUTURES_LIQUIDATION_ORDERS_ENDPOINT = "/fapi/v1/liquidationOrders"
 FUTURES_CONTINUOUS_KLINES_ENDPOINT = "/fapi/v1/continuousKlines"
 FUTURES_INDEX_PRICE_KLINES_ENDPOINT = "/fapi/v1/indexPriceKlines"
 FUTURES_MARK_PRICE_KLINES_ENDPOINT = "/fapi/v1/markPriceKlines"
@@ -172,6 +173,10 @@ FUTURES_TOP_LONG_SHORT_ACCOUNT_RATIO_ENDPOINT = "/futures/data/topLongShortAccou
 FUTURES_GLOBAL_LONG_SHORT_ACCOUNT_RATIO_ENDPOINT = "/futures/data/globalLongShortAccountRatio"
 FUTURES_TAKER_BUY_SELL_VOL_ENDPOINT = "/futures/data/takerBuySellVol"
 FUTURES_BASIS_ENDPOINT = "/futures/data/basis"
+
+FUTURES_FORCE_ORDERS_ENDPOINT = "/fapi/v1/forceOrders"
+FUTURES_ALL_FORCE_ORDERS_ENDPOINT = "/fapi/v1/allForceOrders"
+FUTURES_LEVERAGE_BRACKET_ENDPOINT = "/fapi/v1/leverageBracket"
 
 
 

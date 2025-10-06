@@ -37,7 +37,7 @@ class FuturesClient(BinancePrivateBase):
             logger.exception("Error getting futures balance")
             raise BinanceAPIError(f"Error getting futures balance: {e}")
 
-    async def get_positions(self) -> List[Dict[str, Any]]:
+    async def get_futures_position(self) -> List[Dict[str, Any]]:
         """GET /fapi/v2/positionRisk"""
         try:
             return await self.circuit_breaker.execute(
@@ -46,6 +46,61 @@ class FuturesClient(BinancePrivateBase):
         except Exception as e:
             logger.exception("Error getting futures positions")
             raise BinanceAPIError(f"Error getting futures positions: {e}")
+
+
+    async def get_account_commission(self, symbol: str) -> Dict[str, Any]:
+        """GET /fapi/v1/commissionRate - Get account commission rate."""
+        try:
+            params = {"symbol": symbol.upper()}
+            return await self.circuit_breaker.execute(
+                self.http._request, "GET", "/fapi/v1/commissionRate",
+                params=params, signed=True, futures=True
+            )
+        except Exception as e:
+            logger.exception("Error getting account commission")
+            raise BinanceAPIError("Error getting account commission", e)
+
+    async def get_futures_account_transaction_history(self, asset: str, 
+                                                     start_time: Optional[int] = None,
+                                                     end_time: Optional[int] = None,
+                                                     current: Optional[int] = None,
+                                                     size: Optional[int] = None) -> Dict[str, Any]:
+        """GET /fapi/v1/account - Get futures account transaction history."""
+        try:
+            params = {"asset": asset.upper()}
+            if start_time:
+                params["startTime"] = start_time
+            if end_time:
+                params["endTime"] = end_time
+            if current:
+                params["current"] = current
+            if size:
+                params["size"] = size
+                
+            return await self.circuit_breaker.execute(
+                self.http._request, "GET", "/fapi/v1/account",
+                params=params, signed=True, futures=True
+            )
+        except Exception as e:
+            logger.exception("Error getting futures account transaction history")
+            raise BinanceAPIError("Error getting futures account transaction history", e)
+            
+    
+    async def get_account_balance(self) -> List[Dict[str, Any]]:
+        """GET /fapi/v2/balance - Get futures account balances."""
+        try:
+            await self._require_keys()
+            return await self.circuit_breaker.execute(
+                self.http._request, "GET", "/fapi/v2/balance",
+                signed=True, futures=True
+            )
+        except Exception as e:
+            logger.exception("Error getting futures account balance")
+            raise BinanceAPIError(f"Error getting futures account balance: {e}")
+
+
+
+
 
     # -------------------- Orders --------------------
     async def place_order(
@@ -334,47 +389,9 @@ class FuturesClient(BinancePrivateBase):
             logger.exception("Error canceling multiple futures orders")
             raise BinanceAPIError("Error canceling multiple futures orders", e)
 
-    # -------------------- Account  --------------------
 
-    async def get_account_commission(self, symbol: str) -> Dict[str, Any]:
-        """GET /fapi/v1/commissionRate - Get account commission rate."""
-        try:
-            params = {"symbol": symbol.upper()}
-            return await self.circuit_breaker.execute(
-                self.http._request, "GET", "/fapi/v1/commissionRate",
-                params=params, signed=True, futures=True
-            )
-        except Exception as e:
-            logger.exception("Error getting account commission")
-            raise BinanceAPIError("Error getting account commission", e)
-
-    async def get_futures_account_transaction_history(self, asset: str, 
-                                                     start_time: Optional[int] = None,
-                                                     end_time: Optional[int] = None,
-                                                     current: Optional[int] = None,
-                                                     size: Optional[int] = None) -> Dict[str, Any]:
-        """GET /fapi/v1/account - Get futures account transaction history."""
-        try:
-            params = {"asset": asset.upper()}
-            if start_time:
-                params["startTime"] = start_time
-            if end_time:
-                params["endTime"] = end_time
-            if current:
-                params["current"] = current
-            if size:
-                params["size"] = size
-                
-            return await self.circuit_breaker.execute(
-                self.http._request, "GET", "/fapi/v1/account",
-                params=params, signed=True, futures=True
-            )
-        except Exception as e:
-            logger.exception("Error getting futures account transaction history")
-            raise BinanceAPIError("Error getting futures account transaction history", e)
             
-            
-            # utils/binance/binance_pr_futures.py - FuturesClient'a eklenen yeni endpoint'ler
+    # 
 
     async def get_force_orders(
         self,

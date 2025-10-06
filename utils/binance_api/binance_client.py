@@ -409,6 +409,13 @@ class BinanceClient:
         return await self._request("POST", "/fapi/v1/order", params, signed=True, base_url=FUTURES_URL, user_id=user_id)
         
 
+# ---------- Futures Endpoints ----------
+
+    async def get_futures_positions(self, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get user futures positions (GET /fapi/v2/positionRisk)"""
+        return await self._request("GET", "/fapi/v2/positionRisk", signed=True, base_url=FUTURES_URL, user_id=user_id)
+
+
     async def get_futures_klines(self, symbol: str, interval: str, limit: int = 500) -> pd.DataFrame:
         """Get futures klines data"""
         if not symbol or not interval:
