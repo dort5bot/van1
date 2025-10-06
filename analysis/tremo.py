@@ -1,552 +1,521 @@
+# analysis/tremo.py
 """
-bot/analiz/tremo.py
-Modüler Yapı:Singleton pattern+Async/await uyumlu+Cache mekanizması+Type hints ve docstrings+
-Aiogram Entegrasyonu:Router pattern ile /tremo komutu+Markdown formatlı çıktı
+Trend & Momentum (TA) Analysis Module
+=====================================
+Trend yönü ve momentum gücü analizi için teknik analiz modülü.
+EMA, RSI, MACD, Bollinger Bands, ATR + Kalman Filter + Wavelet Transform
 
-Yön ve Momentum indikatörleri hesaplama modülü.
-EMA Ribbon (20, 50, 200), RSI (14), MACD (12, 26, 9), 
-SuperTrend (10, 3), Volume-Weighted MACD indikatörlerini hesaplar.
-
-Özellikler:
-- -1 (Bearish) ile +1 (Bullish) arası sinyal skoru
-- BinanceAPI async/await uyumlu
-- aiogram 3.x Router pattern ile entegrasyon
-- Singleton pattern ile IndicatorService
-- PEP8, type hints, docstrings, logging
-
-Kullanım örneği:
-    from utils.binance.binance_a import BinanceAPI
-    from bot.analiz.tremo import TremoAnalyzer
-    
-    analyzer = TremoAnalyzer(binance_api)
-    result = await analyzer.analyze("BTCUSDT", "1h")
-    print(f"Sinyal Skoru: {result.signal_score}")
- 5 Ana İndikatör:
-EMA Ribbon (20, 50, 200)
-RSI (14)
-MACD (12, 26, 9)
-SuperTrend (10, 3)
-Volume-Weighted MACD
-
-Sinyal Skoru Açıklaması:
-- +1.0: Güçlü Bullish
-- +0.5: Bullish
-- 0.0: Nötr
-- -0.5: Bearish
-- -1.0: Güçlü Bearish
+Modül şu metriklere sahip:
+✅ Klasik: EMA, RSI, MACD, Bollinger Bands, ATR
+✅ Profesyonel: Kalman Filter, Z-Score, Wavelet Transform, Hilbert Slope
+✅ Composite: EMA + RSI + MACD + Kalman Filter kombinasyonu
 """
-
-from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from typing import Dict, List, Optional, Tuple, Any
+import numpy as np
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Union
-from enum import Enum
+from contextlib import asynccontextmanager
 
-# Local imports
-try:
-    from utils.binance.binance_a import BinanceAPI
-except ImportError:
-    # Fallback for direct testing
-    class BinanceAPI:
-        pass
+# Binance API import
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'utils', 'binance_api'))
+from binance_a import BinanceAggregator
 
+# Configure logging
 logger = logging.getLogger(__name__)
 
-class SignalStrength(Enum):
-    """Sinyal gücü enum."""
-    STRONG_BULLISH = 1.0
-    BULLISH = 0.5
-    NEUTRAL = 0.0
-    BEARISH = -0.5
-    STRONG_BEARISH = -1.0
-
-# -------------------------
-# Numeric calculation helpers
-# -------------------------
-
-def sma(values: List[float], period: int) -> List[Optional[float]]:
-    """Simple moving average."""
-    if period <= 0 or len(values) < period:
-        return [None] * len(values)
-    
-    out: List[Optional[float]] = [None] * len(values)
-    window_sum = 0.0
-    
-    for i in range(len(values)):
-        window_sum += values[i]
-        if i >= period:
-            window_sum -= values[i - period]
-        if i >= period - 1:
-            out[i] = window_sum / period
-    
-    return out
-
-def ema(values: List[float], period: int) -> List[Optional[float]]:
-    """Exponential moving average."""
-    if period <= 0 or not values:
-        return [None] * len(values)
-    
-    out: List[Optional[float]] = [None] * len(values)
-    alpha = 2.0 / (period + 1)
-    
-    # Initialize with SMA
-    sma_vals = sma(values, period)
-    prev_ema = None
-    
-    for i in range(len(values)):
-        if sma_vals[i] is not None and prev_ema is None:
-            prev_ema = sma_vals[i]
-            out[i] = prev_ema
-        elif prev_ema is not None:
-            prev_ema = (values[i] * alpha) + (prev_ema * (1 - alpha))
-            out[i] = prev_ema
-        else:
-            out[i] = None
-    
-    return out
-
-def rsi(values: List[float], period: int = 14) -> List[Optional[float]]:
-    """Relative Strength Index."""
-    if len(values) < period + 1:
-        return [None] * len(values)
-    
-    out: List[Optional[float]] = [None] * len(values)
-    gains: List[float] = [0.0]
-    losses: List[float] = [0.0]
-    
-    # Calculate gains and losses
-    for i in range(1, len(values)):
-        change = values[i] - values[i-1]
-        gains.append(max(change, 0.0))
-        losses.append(max(-change, 0.0))
-    
-    # Calculate initial averages
-    avg_gain = sum(gains[1:period+1]) / period
-    avg_loss = sum(losses[1:period+1]) / period
-    
-    if avg_loss == 0:
-        out[period] = 100.0
-    else:
-        rs = avg_gain / avg_loss
-        out[period] = 100.0 - (100.0 / (1.0 + rs))
-    
-    # Calculate subsequent values with Wilder smoothing
-    for i in range(period + 1, len(values)):
-        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
-        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
-        
-        if avg_loss == 0:
-            out[i] = 100.0
-        else:
-            rs = avg_gain / avg_loss
-            out[i] = 100.0 - (100.0 / (1.0 + rs))
-    
-    return out
-
-def macd(values: List[float], fast: int = 12, slow: int = 26, signal: int = 9) -> Tuple[List[Optional[float]], List[Optional[float]], List[Optional[float]]]:
-    """MACD indicator."""
-    ema_fast = ema(values, fast)
-    ema_slow = ema(values, slow)
-    
-    macd_line: List[Optional[float]] = []
-    for i in range(len(values)):
-        if ema_fast[i] is not None and ema_slow[i] is not None:
-            macd_line.append(ema_fast[i] - ema_slow[i])
-        else:
-            macd_line.append(None)
-    
-    # For signal line, replace None with 0 for calculation
-    macd_vals = [v if v is not None else 0.0 for v in macd_line]
-    signal_line = ema(macd_vals, signal)
-    
-    histogram: List[Optional[float]] = []
-    for i in range(len(values)):
-        if macd_line[i] is not None and signal_line[i] is not None:
-            histogram.append(macd_line[i] - signal_line[i])
-        else:
-            histogram.append(None)
-    
-    return macd_line, signal_line, histogram
-
-def supertrend(highs: List[float], lows: List[float], closes: List[float], period: int = 10, multiplier: float = 3.0) -> List[Optional[float]]:
-    """SuperTrend indicator."""
-    length = len(closes)
-    if length < period:
-        return [None] * length
-    
-    # Calculate True Range
-    tr: List[float] = [0.0] * length
-    for i in range(1, length):
-        tr1 = highs[i] - lows[i]
-        tr2 = abs(highs[i] - closes[i-1])
-        tr3 = abs(lows[i] - closes[i-1])
-        tr[i] = max(tr1, tr2, tr3)
-    
-    # Calculate ATR
-    atr: List[Optional[float]] = [None] * length
-    atr_sum = sum(tr[1:period+1])
-    atr[period] = atr_sum / period
-    
-    for i in range(period+1, length):
-        atr[i] = (atr[i-1] * (period - 1) + tr[i]) / period
-    
-    # Calculate SuperTrend
-    st: List[Optional[float]] = [None] * length
-    upper_band: List[Optional[float]] = [None] * length
-    lower_band: List[Optional[float]] = [None] * length
-    final_upper_band: List[Optional[float]] = [None] * length
-    final_lower_band: List[Optional[float]] = [None] * length
-    
-    for i in range(period, length):
-        if atr[i] is None:
-            continue
-            
-        hl2 = (highs[i] + lows[i]) / 2.0
-        upper_band[i] = hl2 + (multiplier * atr[i])
-        lower_band[i] = hl2 - (multiplier * atr[i])
-        
-        if i == period:
-            final_upper_band[i] = upper_band[i]
-            final_lower_band[i] = lower_band[i]
-            st[i] = lower_band[i]
-        else:
-            # Update upper band
-            if upper_band[i] < final_upper_band[i-1] or closes[i-1] > final_upper_band[i-1]:
-                final_upper_band[i] = upper_band[i]
-            else:
-                final_upper_band[i] = final_upper_band[i-1]
-            
-            # Update lower band
-            if lower_band[i] > final_lower_band[i-1] or closes[i-1] < final_lower_band[i-1]:
-                final_lower_band[i] = lower_band[i]
-            else:
-                final_lower_band[i] = final_lower_band[i-1]
-            
-            # Determine SuperTrend value
-            if st[i-1] == final_upper_band[i-1]:
-                if closes[i] <= final_upper_band[i]:
-                    st[i] = final_upper_band[i]
-                else:
-                    st[i] = final_lower_band[i]
-            else:
-                if closes[i] >= final_lower_band[i]:
-                    st[i] = final_lower_band[i]
-                else:
-                    st[i] = final_upper_band[i]
-    
-    return st
-
-def vwmacd(highs: List[float], lows: List[float], closes: List[float], volumes: List[float], 
-           fast: int = 12, slow: int = 26, signal: int = 9) -> Tuple[List[Optional[float]], List[Optional[float]], List[Optional[float]]]:
-    """Volume Weighted MACD."""
-    # Calculate VWAP-like price (typical price weighted by volume)
-    vwap_prices: List[Optional[float]] = [None] * len(closes)
-    cumulative_pv = 0.0
-    cumulative_volume = 0.0
-    
-    for i in range(len(closes)):
-        typical_price = (highs[i] + lows[i] + closes[i]) / 3.0
-        cumulative_pv += typical_price * volumes[i]
-        cumulative_volume += volumes[i]
-        
-        if cumulative_volume > 0:
-            vwap_prices[i] = cumulative_pv / cumulative_volume
-        else:
-            vwap_prices[i] = None
-    
-    # Use VWAP prices for MACD calculation
-    vwap_vals = [v if v is not None else 0.0 for v in vwap_prices]
-    return macd(vwap_vals, fast, slow, signal)
-
-# -------------------------
-# Data classes
-# -------------------------
-
 @dataclass
-class TremoResult:
-    """Tremo analiz sonuçları."""
-    symbol: str
-    interval: str
-    close: float
-    ema20: Optional[float]
-    ema50: Optional[float]
-    ema200: Optional[float]
-    rsi14: Optional[float]
-    macd_line: Optional[float]
-    macd_signal: Optional[float]
-    macd_hist: Optional[float]
-    supertrend: Optional[float]
-    vwmacd_line: Optional[float]
-    vwmacd_signal: Optional[float]
-    vwmacd_hist: Optional[float]
-    signal_score: float
-    signal_strength: SignalStrength
-    
-    def __str__(self) -> str:
-        """String representation for easy reading."""
-        lines = [
-            f"=== TREMO ANALİZ: {self.symbol} {self.interval} ===",
-            f"Fiyat: {self.close:.8f}",
-            f"EMA Ribbon: 20={self.ema20:.8f}, 50={self.ema50:.8f}, 200={self.ema200:.8f}",
-            f"RSI14: {self.rsi14:.2f}" if self.rsi14 else "RSI14: N/A",
-            f"MACD: Line={self.macd_line:.8f}, Signal={self.macd_signal:.8f}, Hist={self.macd_hist:.8f}",
-            f"SuperTrend: {self.supertrend:.8f}" if self.supertrend else "SuperTrend: N/A",
-            f"VW-MACD: Line={self.vwmacd_line:.8f}, Signal={self.vwmacd_signal:.8f}, Hist={self.vwmacd_hist:.8f}",
-            f"Sinyal Skoru: {self.signal_score:.2f} ({self.signal_strength.name})",
-            "=== SONUÇ ==="
-        ]
-        return "\n".join(lines)
+class TechnicalIndicators:
+    """Teknik gösterge veri yapısı"""
+    ema_fast: float
+    ema_slow: float
+    rsi: float
+    macd: float
+    macd_signal: float
+    macd_histogram: float
+    bollinger_upper: float
+    bollinger_lower: float
+    bollinger_middle: float
+    atr: float
+    kalman_trend: float
+    z_score: float
+    wavelet_coefficient: Optional[float] = None
+    hilbert_slope: Optional[float] = None
 
-# -------------------------
-# Main analyzer class
-# -------------------------
-
-class TremoAnalyzer:
-    """Tremo Yön ve Momentum analiz sınıfı."""
+class TrendMomentumAnalyzer:
+    """
+    Trend ve Momentum analiz sınıfı
+    Thread-safe + Cache optimized + Error handling
+    """
     
-    _instance: Optional[TremoAnalyzer] = None
-    
-    def __init__(self, binance_api: BinanceAPI, cache_ttl: float = 60.0):
-        self.binance_api = binance_api
-        self.cache_ttl = cache_ttl  # seconds
+    def __init__(self):
+        self.binance = BinanceAggregator()
         self._cache: Dict[str, Tuple[float, Any]] = {}
-        self._lock = asyncio.Lock()
-        logger.info("TremoAnalyzer initialized")
-    
-    @classmethod
-    def get_instance(cls, binance_api: BinanceAPI) -> TremoAnalyzer:
-        """Singleton instance getter."""
-        if cls._instance is None:
-            cls._instance = cls(binance_api)
-        return cls._instance
-    
-    async def _get_klines(self, symbol: str, interval: str, limit: int = 500) -> List[List[Any]]:
-        """Get klines data with caching."""
-        cache_key = f"{symbol}_{interval}_{limit}"
-        current_time = asyncio.get_event_loop().time()
+        self._cache_lock = asyncio.Lock()
+        self._analysis_lock = asyncio.Lock()
         
-        async with self._lock:
-            if cache_key in self._cache:
-                cached_time, data = self._cache[cache_key]
-                if current_time - cached_time < self.cache_ttl:
-                    logger.debug("Using cached klines for %s", cache_key)
+        # Performance monitoring
+        self._execution_count = 0
+        self._cache_hits = 0
+        
+        logger.info("TrendMomentumAnalyzer initialized")
+    
+    async def cleanup(self):
+        """Resource cleanup"""
+        await self.binance.close()
+        async with self._cache_lock:
+            self._cache.clear()
+        logger.info("TrendMomentumAnalyzer cleanup completed")
+    
+    def _get_cache_key(self, symbol: str, interval: str = "1h", lookback: int = 100) -> str:
+        """Cache key oluştur"""
+        return f"{symbol}_{interval}_{lookback}"
+    
+    async def _get_cached_data(self, key: str) -> Optional[Any]:
+        """Cache'den veri getir"""
+        async with self._cache_lock:
+            if key in self._cache:
+                timestamp, data = self._cache[key]
+                # 60 saniyelik cache TTL
+                if time.time() - timestamp < 60:
+                    self._cache_hits += 1
                     return data
-            
-            logger.debug("Fetching fresh klines for %s", cache_key)
-            klines = await self.binance_api.get_klines(symbol, interval, limit)
-            self._cache[cache_key] = (current_time, klines)
-            return klines
+                else:
+                    del self._cache[key]
+            return None
     
-    def _parse_klines(self, klines: List[List[Any]]) -> Tuple[List[float], List[float], List[float], List[float], List[float]]:
-        """Parse klines data into individual lists."""
-        opens, highs, lows, closes, volumes = [], [], [], [], []
-        
-        for kline in klines:
-            opens.append(float(kline[1]))
-            highs.append(float(kline[2]))
-            lows.append(float(kline[3]))
-            closes.append(float(kline[4]))
-            volumes.append(float(kline[5]))
-        
-        return opens, highs, lows, closes, volumes
+    async def _set_cached_data(self, key: str, data: Any):
+        """Cache'e veri kaydet"""
+        async with self._cache_lock:
+            self._cache[key] = (time.time(), data)
     
-    def _calculate_signal_score(self, result: TremoResult) -> float:
-        """Calculate overall signal score from -1 (bearish) to +1 (bullish)."""
-        signals = []
-        
-        # EMA Ribbon signals
-        if result.ema20 and result.ema50 and result.ema200:
-            if result.ema20 > result.ema50 > result.ema200:
-                signals.append(1.0)  # Strong bullish trend
-            elif result.ema20 > result.ema50:
-                signals.append(0.5)  # Bullish trend
-            elif result.ema20 < result.ema50 < result.ema200:
-                signals.append(-1.0)  # Strong bearish trend
-            elif result.ema20 < result.ema50:
-                signals.append(-0.5)  # Bearish trend
-        
-        # RSI signals
-        if result.rsi14:
-            if result.rsi14 > 70:
-                signals.append(-0.3)  # Overbought
-            elif result.rsi14 < 30:
-                signals.append(0.3)   # Oversold
-            elif result.rsi14 > 50:
-                signals.append(0.2)   # Bullish momentum
-            else:
-                signals.append(-0.2)  # Bearish momentum
-        
-        # MACD signals
-        if result.macd_line and result.macd_signal:
-            if result.macd_line > result.macd_signal and result.macd_hist and result.macd_hist > 0:
-                signals.append(0.4)  # Bullish crossover
-            elif result.macd_line < result.macd_signal and result.macd_hist and result.macd_hist < 0:
-                signals.append(-0.4)  # Bearish crossover
-        
-        # SuperTrend signals
-        if result.supertrend and result.close:
-            if result.close > result.supertrend:
-                signals.append(0.3)  # Bullish trend
-            else:
-                signals.append(-0.3)  # Bearish trend
-        
-        # VW-MACD signals
-        if result.vwmacd_line and result.vwmacd_signal:
-            if result.vwmacd_line > result.vwmacd_signal and result.vwmacd_hist and result.vwmacd_hist > 0:
-                signals.append(0.3)  # Volume-confirmed bullish
-            elif result.vwmacd_line < result.vwmacd_signal and result.vwmacd_hist and result.vwmacd_hist < 0:
-                signals.append(-0.3)  # Volume-confirmed bearish
-        
-        # Calculate weighted average
-        if not signals:
-            return 0.0
-        
-        return sum(signals) / len(signals)
-    
-    def _get_signal_strength(self, score: float) -> SignalStrength:
-        """Convert numeric score to SignalStrength enum."""
-        if score >= 0.7:
-            return SignalStrength.STRONG_BULLISH
-        elif score >= 0.3:
-            return SignalStrength.BULLISH
-        elif score <= -0.7:
-            return SignalStrength.STRONG_BEARISH
-        elif score <= -0.3:
-            return SignalStrength.BEARISH
-        else:
-            return SignalStrength.NEUTRAL
-    
-    async def analyze(self, symbol: str, interval: str = "1h", limit: int = 500) -> TremoResult:
-        """Perform complete Tremo analysis."""
-        logger.info("Starting Tremo analysis for %s %s", symbol, interval)
-        
-        # Get market data
-        klines = await self._get_klines(symbol, interval, limit)
-        opens, highs, lows, closes, volumes = self._parse_klines(klines)
-        
-        if len(closes) < 200:
-            logger.warning("Insufficient data points for %s. Need at least 200, got %d", symbol, len(closes))
-        
-        # Calculate all indicators
-        ema20_vals = ema(closes, 20)
-        ema50_vals = ema(closes, 50)
-        ema200_vals = ema(closes, 200)
-        rsi_vals = rsi(closes, 14)
-        macd_line, macd_signal, macd_hist = macd(closes, 12, 26, 9)
-        st_vals = supertrend(highs, lows, closes, 10, 3.0)
-        vwmacd_line, vwmacd_signal, vwmacd_hist = vwmacd(highs, lows, closes, volumes, 12, 26, 9)
-        
-        # Get latest values
-        last_idx = len(closes) - 1
-        
-        result = TremoResult(
-            symbol=symbol.upper(),
-            interval=interval,
-            close=closes[last_idx],
-            ema20=ema20_vals[last_idx] if last_idx < len(ema20_vals) else None,
-            ema50=ema50_vals[last_idx] if last_idx < len(ema50_vals) else None,
-            ema200=ema200_vals[last_idx] if last_idx < len(ema200_vals) else None,
-            rsi14=rsi_vals[last_idx] if last_idx < len(rsi_vals) else None,
-            macd_line=macd_line[last_idx] if last_idx < len(macd_line) else None,
-            macd_signal=macd_signal[last_idx] if last_idx < len(macd_signal) else None,
-            macd_hist=macd_hist[last_idx] if last_idx < len(macd_hist) else None,
-            supertrend=st_vals[last_idx] if last_idx < len(st_vals) else None,
-            vwmacd_line=vwmacd_line[last_idx] if last_idx < len(vwmacd_line) else None,
-            vwmacd_signal=vwmacd_signal[last_idx] if last_idx < len(vwmacd_signal) else None,
-            vwmacd_hist=vwmacd_hist[last_idx] if last_idx < len(vwmacd_hist) else None,
-            signal_score=0.0,
-            signal_strength=SignalStrength.NEUTRAL
-        )
-        
-        # Calculate signal score
-        result.signal_score = self._calculate_signal_score(result)
-        result.signal_strength = self._get_signal_strength(result.signal_score)
-        
-        logger.info("Tremo analysis completed for %s: score=%.2f", symbol, result.signal_score)
-        return result
-
-# -------------------------
-# Aiogram integration
-# -------------------------
-
-try:
-    from aiogram import Router, F
-    from aiogram.types import Message
-    from aiogram.filters import Command
-    
-    router = Router()
-    
-    @router.message(Command("tremo"))
-    async def handle_tremo_command(message: Message):
-        """Handle /tremo command for Tremo analysis."""
+    async def _fetch_klines_data(self, symbol: str, interval: str = "1h", limit: int = 100) -> List[Dict]:
+        """
+        Binance klines verisini güvenli şekilde çek
+        Validation + Error handling
+        """
         try:
-            parts = message.text.split()
-            if len(parts) < 2:
-                await message.reply("Kullanım: /tremo SYMBOL [INTERVAL]\nÖrnek: /tremo BTCUSDT 1h")
-                return
+            # Input validation
+            if not symbol or not isinstance(symbol, str):
+                raise ValueError("Invalid symbol format")
             
-            symbol = parts[1].upper()
-            interval = parts[2] if len(parts) > 2 else "1h"
+            symbol = symbol.upper().strip()
+            valid_intervals = ["1m", "5m", "15m", "1h", "4h", "1d"]
+            if interval not in valid_intervals:
+                raise ValueError(f"Invalid interval. Must be one of {valid_intervals}")
             
-            # Get analyzer instance (assuming binance_api is available in context)
-            from your_main_bot_file import binance_api  # Adjust import as needed
+            logger.debug(f"Fetching klines for {symbol} with interval {interval}")
             
-            analyzer = TremoAnalyzer.get_instance(binance_api)
-            await message.reply(f"⏳ {symbol} {interval} için Tremo analizi yapılıyor...")
-            
-            result = await analyzer.analyze(symbol, interval)
-            
-            # Create formatted response
-            response = (
-                f"📊 *TREMO ANALİZ: {result.symbol} {result.interval}*\n\n"
-                f"💰 Fiyat: `{result.close:.8f}`\n"
-                f"📈 EMA Ribbon: 20=`{result.ema20:.8f}`, 50=`{result.ema50:.8f}`, 200=`{result.ema200:.8f}`\n"
-                f"🔍 RSI14: `{result.rsi14:.2f}`\n"
-                f"📉 MACD: Line=`{result.macd_line:.8f}`, Signal=`{result.macd_signal:.8f}`\n"
-                f"🎯 SuperTrend: `{result.supertrend:.8f}`\n"
-                f"💧 VW-MACD: Line=`{result.vwmacd_line:.8f}`, Signal=`{result.vwmacd_signal:.8f}`\n\n"
-                f"⚡ *Sinyal Skoru: {result.signal_score:.2f}* \n"
-                f"🎯 *Durum: {result.signal_strength.name}*"
+            # Binance aggregator üzerinden veri çek
+            klines_data = await self.binance.get_klines(
+                symbol=symbol,
+                interval=interval,
+                limit=limit
             )
             
-            await message.reply(response, parse_mode="Markdown")
+            if not klines_data or len(klines_data) < 20:
+                raise ValueError(f"Insufficient data for {symbol}")
+            
+            return klines_data
             
         except Exception as e:
-            logger.error("Tremo command error: %s", e)
-            await message.reply(f"❌ Hata: {str(e)}")
+            logger.error(f"Klines data fetch failed for {symbol}: {str(e)}")
+            raise
     
-except ImportError:
-    # aiogram not available, skip router creation
-    router = None
-    logger.warning("aiogram not available, skipping router creation")
-
-# -------------------------
-# Quick test function
-# -------------------------
-
-async def test_tremo_analyzer():
-    """Test function for TremoAnalyzer."""
-    # Mock BinanceAPI for testing
-    class MockBinanceAPI:
-        async def get_klines(self, symbol, interval, limit):
-            # Return mock data
-            return [
-                [0, 50000, 51000, 49000, 50500, 1000],
-                [0, 50500, 51500, 49500, 51000, 1200],
-                # Add more mock data as needed
-            ] * 200
+    def _calculate_ema(self, prices: List[float], period: int) -> float:
+        """Exponential Moving Average hesapla"""
+        if len(prices) < period:
+            return np.mean(prices) if prices else 0.0
+        
+        try:
+            prices_array = np.array(prices[-period:])
+            weights = np.exp(np.linspace(-1., 0., period))
+            weights /= weights.sum()
+            return float(np.dot(prices_array, weights))
+        except Exception as e:
+            logger.error(f"EMA calculation error: {str(e)}")
+            return float(np.mean(prices)) if prices else 0.0
     
-    mock_api = MockBinanceAPI()
-    analyzer = TremoAnalyzer(mock_api)
+    def _calculate_rsi(self, prices: List[float], period: int = 14) -> float:
+        """Relative Strength Index hesapla"""
+        if len(prices) < period + 1:
+            return 50.0  # Neutral RSI
+        
+        try:
+            deltas = np.diff(prices)
+            gains = np.where(deltas > 0, deltas, 0)
+            losses = np.where(deltas < 0, -deltas, 0)
+            
+            avg_gain = np.mean(gains[-period:])
+            avg_loss = np.mean(losses[-period:])
+            
+            if avg_loss == 0:
+                return 100.0 if avg_gain > 0 else 50.0
+            
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+            
+            return float(np.clip(rsi, 0, 100))
+        except Exception as e:
+            logger.error(f"RSI calculation error: {str(e)}")
+            return 50.0
+    
+    def _calculate_macd(self, prices: List[float]) -> Tuple[float, float, float]:
+        """MACD, Signal ve Histogram hesapla"""
+        if len(prices) < 26:
+            return 0.0, 0.0, 0.0
+        
+        try:
+            ema_12 = self._calculate_ema(prices, 12)
+            ema_26 = self._calculate_ema(prices, 26)
+            macd = ema_12 - ema_26
+            
+            # MACD signal (EMA of MACD)
+            macd_values = [self._calculate_ema(prices[i-8:i+1], 9) for i in range(8, len(prices))]
+            if macd_values:
+                macd_signal = macd_values[-1]
+            else:
+                macd_signal = macd
+            
+            macd_histogram = macd - macd_signal
+            
+            return float(macd), float(macd_signal), float(macd_histogram)
+        except Exception as e:
+            logger.error(f"MACD calculation error: {str(e)}")
+            return 0.0, 0.0, 0.0
+    
+    def _calculate_bollinger_bands(self, prices: List[float], period: int = 20) -> Tuple[float, float, float]:
+        """Bollinger Bands hesapla"""
+        if len(prices) < period:
+            avg = np.mean(prices) if prices else 0.0
+            return avg, avg, avg
+        
+        try:
+            recent_prices = prices[-period:]
+            middle = np.mean(recent_prices)
+            std = np.std(recent_prices)
+            
+            upper = middle + (std * 2)
+            lower = middle - (std * 2)
+            
+            return float(upper), float(middle), float(lower)
+        except Exception as e:
+            logger.error(f"Bollinger Bands calculation error: {str(e)}")
+            avg = np.mean(prices) if prices else 0.0
+            return avg, avg, avg
+    
+    def _calculate_atr(self, high: List[float], low: List[float], close: List[float], period: int = 14) -> float:
+        """Average True Range hesapla"""
+        if len(high) < period or len(low) < period or len(close) < period:
+            return 0.0
+        
+        try:
+            true_ranges = []
+            for i in range(1, len(high)):
+                tr1 = high[i] - low[i]
+                tr2 = abs(high[i] - close[i-1])
+                tr3 = abs(low[i] - close[i-1])
+                true_ranges.append(max(tr1, tr2, tr3))
+            
+            if len(true_ranges) < period:
+                return float(np.mean(true_ranges)) if true_ranges else 0.0
+            
+            return float(np.mean(true_ranges[-period:]))
+        except Exception as e:
+            logger.error(f"ATR calculation error: {str(e)}")
+            return 0.0
+    
+    def _calculate_kalman_filter(self, prices: List[float]) -> float:
+        """
+        Basitleştirilmiş Kalman Filter trend tespiti
+        """
+        if len(prices) < 5:
+            return 0.0
+        
+        try:
+            # Basit lineer regresyon ile trend
+            x = np.arange(len(prices))
+            y = np.array(prices)
+            
+            # Robust lineer regresyon
+            A = np.vstack([x, np.ones(len(x))]).T
+            slope, _ = np.linalg.lstsq(A, y, rcond=None)[0]
+            
+            # Normalize trend skoru (-1 to 1)
+            price_range = max(prices) - min(prices)
+            if price_range > 0:
+                trend_strength = slope / (price_range / len(prices))
+                return float(np.tanh(trend_strength))  # -1 to 1 aralığına sıkıştır
+            else:
+                return 0.0
+                
+        except Exception as e:
+            logger.error(f"Kalman filter calculation error: {str(e)}")
+            return 0.0
+    
+    def _calculate_z_score(self, prices: List[float]) -> float:
+        """Z-Score normalization"""
+        if len(prices) < 10:
+            return 0.0
+        
+        try:
+            recent_prices = prices[-10:]
+            mean = np.mean(recent_prices)
+            std = np.std(recent_prices)
+            
+            if std > 0:
+                return float((prices[-1] - mean) / std)
+            else:
+                return 0.0
+        except Exception as e:
+            logger.error(f"Z-Score calculation error: {str(e)}")
+            return 0.0
+    
+    def _calculate_wavelet_transform(self, prices: List[float]) -> Optional[float]:
+        """
+        Basitleştirilmiş Wavelet Transform katsayısı
+        Gerçek uygulamada pywt kütüphanesi kullanılabilir
+        """
+        if len(prices) < 8:
+            return None
+        
+        try:
+            # Basit high-pass filter (difference)
+            differences = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+            if differences:
+                return float(np.mean(differences[-4:]))
+            return None
+        except Exception as e:
+            logger.error(f"Wavelet transform calculation error: {str(e)}")
+            return None
+    
+    def _calculate_hilbert_slope(self, prices: List[float]) -> Optional[float]:
+        """
+        Basitleştirilmiş Hilbert Transform slope
+        """
+        if len(prices) < 10:
+            return None
+        
+        try:
+            # Fiyat değişimlerinin slope'u
+            recent_prices = prices[-10:]
+            x = np.arange(len(recent_prices))
+            slope, _ = np.polyfit(x, recent_prices, 1)
+            return float(slope)
+        except Exception as e:
+            logger.error(f"Hilbert slope calculation error: {str(e)}")
+            return None
+    
+    async def _calculate_technical_indicators(self, symbol: str) -> TechnicalIndicators:
+        """
+        Tüm teknik göstergeleri hesapla
+        Thread-safe + Cache optimized
+        """
+        cache_key = self._get_cache_key(symbol)
+        cached_data = await self._get_cached_data(cache_key)
+        
+        if cached_data:
+            logger.debug(f"Using cached indicators for {symbol}")
+            return cached_data
+        
+        async with self._analysis_lock:
+            # Veriyi çek
+            klines_data = await self._fetch_klines_data(symbol)
+            
+            # Price arrays oluştur
+            closes = [float(k[4]) for k in klines_data]  # close price
+            highs = [float(k[2]) for k in klines_data]   # high price
+            lows = [float(k[3]) for k in klines_data]    # low price
+            
+            # Klasik metrikler
+            ema_fast = self._calculate_ema(closes, 12)
+            ema_slow = self._calculate_ema(closes, 26)
+            rsi = self._calculate_rsi(closes)
+            macd, macd_signal, macd_histogram = self._calculate_macd(closes)
+            bollinger_upper, bollinger_middle, bollinger_lower = self._calculate_bollinger_bands(closes)
+            atr = self._calculate_atr(highs, lows, closes)
+            
+            # Profesyonel metrikler
+            kalman_trend = self._calculate_kalman_filter(closes)
+            z_score = self._calculate_z_score(closes)
+            wavelet_coefficient = self._calculate_wavelet_transform(closes)
+            hilbert_slope = self._calculate_hilbert_slope(closes)
+            
+            indicators = TechnicalIndicators(
+                ema_fast=ema_fast,
+                ema_slow=ema_slow,
+                rsi=rsi,
+                macd=macd,
+                macd_signal=macd_signal,
+                macd_histogram=macd_histogram,
+                bollinger_upper=bollinger_upper,
+                bollinger_lower=bollinger_lower,
+                bollinger_middle=bollinger_middle,
+                atr=atr,
+                kalman_trend=kalman_trend,
+                z_score=z_score,
+                wavelet_coefficient=wavelet_coefficient,
+                hilbert_slope=hilbert_slope
+            )
+            
+            # Cache'e kaydet
+            await self._set_cached_data(cache_key, indicators)
+            
+            return indicators
+    
+    def _calculate_trend_score(self, indicators: TechnicalIndicators) -> float:
+        """
+        Trend skorunu hesapla (0-1 arası)
+        EMA + RSI + MACD histogram + Kalman Filter kombinasyonu
+        """
+        try:
+            score_components = []
+            
+            # EMA trend (0-1)
+            ema_trend = 1.0 if indicators.ema_fast > indicators.ema_slow else 0.0
+            ema_strength = abs(indicators.ema_fast - indicators.ema_slow) / indicators.ema_slow
+            ema_score = ema_trend * min(ema_strength * 10, 1.0)
+            score_components.append(ema_score * 0.25)
+            
+            # RSI momentum (0-1)
+            rsi_score = 0.0
+            if indicators.rsi > 70:  # Overbought - uptrend
+                rsi_score = (indicators.rsi - 70) / 30
+            elif indicators.rsi < 30:  # Oversold - downtrend
+                rsi_score = (30 - indicators.rsi) / 30
+            else:  # Neutral
+                rsi_score = 0.5 - abs(50 - indicators.rsi) / 40
+            score_components.append(max(0, min(rsi_score, 1)) * 0.25)
+            
+            # MACD momentum (0-1)
+            macd_strength = abs(indicators.macd_histogram) / (abs(indicators.macd) + 0.001)
+            macd_direction = 1.0 if indicators.macd_histogram > 0 else 0.0
+            macd_score = macd_direction * min(macd_strength * 5, 1.0)
+            score_components.append(macd_score * 0.25)
+            
+            # Kalman Filter trend (0-1)
+            kalman_score = (indicators.kalman_trend + 1) / 2  # -1,1 -> 0,1
+            score_components.append(kalman_score * 0.25)
+            
+            # Composite score
+            composite_score = sum(score_components)
+            
+            # Wavelet ve Hilbert ek destek
+            if indicators.wavelet_coefficient is not None and indicators.wavelet_coefficient > 0:
+                composite_score += 0.05
+            if indicators.hilbert_slope is not None and indicators.hilbert_slope > 0:
+                composite_score += 0.05
+            
+            return float(np.clip(composite_score, 0.0, 1.0))
+            
+        except Exception as e:
+            logger.error(f"Trend score calculation error: {str(e)}")
+            return 0.5  # Neutral score on error
+
+# Global analyzer instance
+_analyzer: Optional[TrendMomentumAnalyzer] = None
+_analyzer_lock = asyncio.Lock()
+
+async def get_analyzer() -> TrendMomentumAnalyzer:
+    """Thread-safe analyzer instance getter"""
+    global _analyzer
+    async with _analyzer_lock:
+        if _analyzer is None:
+            _analyzer = TrendMomentumAnalyzer()
+    return _analyzer
+
+async def run(symbol: str, priority: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Ana analiz fonksiyonu - schema_manager ve analysis_core ile uyumlu
+    
+    Args:
+        symbol: Analiz edilecek sembol (örn: BTCUSDT)
+        priority: Öncelik seviyesi (*, **, ***)
+    
+    Returns:
+        Analiz sonuçları dictionary
+    """
+    start_time = time.time()
+    logger.info(f"Starting trend analysis for {symbol}, priority: {priority}")
     
     try:
-        result = await analyzer.analyze("BTCUSDT", "1h")
-        print(result)
+        # Input validation
+        if not symbol or not isinstance(symbol, str):
+            raise ValueError("Invalid symbol parameter")
+        
+        symbol = symbol.upper().strip()
+        
+        # Analyzer instance al
+        analyzer = await get_analyzer()
+        
+        # Teknik göstergeleri hesapla
+        indicators = await analyzer._calculate_technical_indicators(symbol)
+        
+        # Trend skorunu hesapla
+        trend_score = analyzer._calculate_trend_score(indicators)
+        
+        # Priority-based result filtering
+        result_data = {
+            "score": trend_score,
+            "symbol": symbol,
+            "priority": priority,
+            "timestamp": time.time(),
+            "indicators": {
+                "ema_fast": indicators.ema_fast,
+                "ema_slow": indicators.ema_slow,
+                "rsi": indicators.rsi,
+                "macd": indicators.macd,
+                "macd_histogram": indicators.macd_histogram,
+                "bollinger_upper": indicators.bollinger_upper,
+                "bollinger_lower": indicators.bollinger_lower,
+                "atr": indicators.atr,
+                "kalman_trend": indicators.kalman_trend,
+                "z_score": indicators.z_score,
+            }
+        }
+        
+        # Profesyonel metrikleri priority'ye göre ekle
+        if priority in ["**", "***"]:
+            result_data["indicators"]["wavelet_coefficient"] = indicators.wavelet_coefficient
+            result_data["indicators"]["hilbert_slope"] = indicators.hilbert_slope
+        
+        execution_time = time.time() - start_time
+        logger.info(f"Trend analysis completed for {symbol}: score={trend_score:.3f}, time={execution_time:.2f}s")
+        
+        return result_data
+        
+    except asyncio.CancelledError:
+        logger.warning(f"Trend analysis cancelled for {symbol}")
+        raise
+        
     except Exception as e:
-        print(f"Test error: {e}")
+        logger.error(f"Trend analysis failed for {symbol}: {str(e)}", exc_info=True)
+        return {
+            "score": 0.5,
+            "symbol": symbol,
+            "priority": priority,
+            "timestamp": time.time(),
+            "error": f"Analysis failed: {str(e)}",
+            "indicators": {}
+        }
 
+async def cleanup():
+    """Global cleanup fonksiyonu"""
+    global _analyzer
+    if _analyzer:
+        await _analyzer.cleanup()
+        _analyzer = None
+
+# Test için
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(test_tremo_analyzer())
+    
+    async def test_analysis():
+        result = await run("BTCUSDT", priority="**")
+        print("Test Result:", result)
+    
+    asyncio.run(test_analysis())
