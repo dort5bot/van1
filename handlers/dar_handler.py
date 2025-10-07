@@ -8,8 +8,8 @@ komut aciklaması yok (commat_info)> aktif dönemde anlamlı
 . ile başlayan dosyalar ve __pycache__ gibi klasörler yok sayılır.
 /dar → proje ağaç yapısını mesaj olarak gösterir.
 /dar k → tüm @router.message(Command(...)) komutlarını bulur
-/dar t → proje ağaç yapısı+dosyaların içeriğini birleştirip, her dosya için başlık ekleyerek mesaj halinde gönder.txt dosyası olarak gönderir.
-/dar t → Tüm proje (mevcut)
+/dar t → proje ağaç yapısı+dosyaların içeriğini birleştirir,
+her dosya için başlık ekler .txt dosyası olarak gönderir.
 /dar t <dosya> → Sadece belirtilen dosya
 /dar t <klasör> → Sadece belirtilen klasördeki .py dosyaları
 /dar Z → tüm proje klasörünü .zip dosyası olarak gönderir.
