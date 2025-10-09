@@ -3,6 +3,14 @@ Bot Configuration Module
 
 Centralized configuration management for the async trading bot.
 Uses singleton pattern with async support and type hints.
+
+# def validate Mevcut kullanım (geriye uyumlu)
+config.validate()  # Kritik hatalarda exit
+
+# def validate Yeni kullanım - uyarıları almak için
+warnings = config.get_warnings()
+for warning in warnings:
+    logger.warning(warning)
 """
 
 import os
@@ -339,6 +347,7 @@ class ApikeyManagerSettings(BaseSettings):
     TELEGRAM_NAME: str
     TELEGRAM_TOKEN: str
     MASTER_KEY: str
+    DATABASE_URL: str = "data/apikeys.db"
     USE_WEBHOOK: bool = False
     WEBHOOK_SECRET: str
     WEBHOOK_PATH: str = "/webhook"
@@ -352,7 +361,7 @@ class ApikeyManagerSettings(BaseSettings):
     GLASSNODE_API_KEY: str
     ONCHAIN_LOG_LEVEL: str = "INFO"
     ONCHAIN_CACHE_ENABLED: bool = False
-    DATABASE_URL: str = "data/apikeys.db"
+    
 
     class Config:
         env_file = ".env"
@@ -361,12 +370,18 @@ class ApikeyManagerSettings(BaseSettings):
 @lru_cache()
 def get_apikey_config() -> ApikeyManagerSettings:
     config = ApikeyManagerSettings()
-
     db_dir = os.path.dirname(config.DATABASE_URL)
     if db_dir and not os.path.exists(db_dir):
         os.makedirs(db_dir, exist_ok=True)
-
     return config
+
+
+
+# config.py'ye main için olmalı 
+class CacheConfig:
+    USER_SESSION_TTL = 3600  # 1 saat
+    MAX_CONCURRENT_USERS = 1000
+    RATE_LIMIT_REQUESTS_PER_SECOND = 10
 
 
 @dataclass
@@ -503,6 +518,55 @@ class BotConfig:
         
         return True
 
+
+
+    def _validate_critical(self) -> List[str]:
+        """Validate critical configuration values that would prevent bot from starting."""
+        errors = []
+        
+        # Telegram bot validation
+        if not self.TELEGRAM_TOKEN:
+            errors.append("❌ TELEGRAM_TOKEN is required")
+        
+        # Webhook validation
+        if self.USE_WEBHOOK and not self.WEBHOOK_HOST:
+            errors.append("❌ WEBHOOK_HOST is required when USE_WEBHOOK=true")
+        
+        # Binance validation for trading
+        if self.ENABLE_TRADING:
+            if not self.BINANCE_API_KEY:
+                errors.append("❌ BINANCE_API_KEY is required when trading is enabled")
+            if not self.BINANCE_API_SECRET:
+                errors.append("❌ BINANCE_API_SECRET is required when trading is enabled")
+        
+        return errors
+
+    def get_warnings(self) -> List[str]:
+        """
+        Get configuration warnings (non-critical issues).
+        
+        Returns:
+            List[str]: List of warning messages
+        """
+        warnings = []
+        
+        if self.ENABLE_TRADING and not self.USE_WEBHOOK:
+            warnings.append("⚠️ Trading enabled but webhook disabled - consider using webhook for production")
+            
+        if self.DEBUG and self.ENABLE_TRADING:
+            warnings.append("⚠️ Debug mode with trading enabled - be cautious with real funds")
+        
+        # Webhook URL validation warning
+        if self.USE_WEBHOOK and self.WEBHOOK_URL and not self.WEBHOOK_URL.startswith(('https://', 'http://')):
+            warnings.append("⚠️ Webhook URL might be malformed")
+        
+        # Testnet warning for production
+        if self.ENABLE_TRADING and self.BINANCE.environment.ENV == Environment.PRODUCTION:
+            warnings.append("⚠️ Trading enabled in PRODUCTION environment - real funds at risk!")
+        
+        return warnings
+        
+    
     def is_admin(self, user_id: int) -> bool:
         """
         Check if user is admin.

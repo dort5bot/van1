@@ -33,13 +33,15 @@ import os
 import asyncio
 import logging
 import signal
-from typing import Optional, Dict, Any
+import time
+from typing import Optional, Dict, Any, Union
 from contextlib import asynccontextmanager
 
 import aiohttp
 from aiohttp import web
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, Router
+from datetime import datetime
 from aiogram.types import Update, Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiogram.client.default import DefaultBotProperties
@@ -48,13 +50,79 @@ from aiogram.filters import BaseFilter
 from aiogram.types import ErrorEvent
 
 from utils.handler_loader import load_handlers, clear_handler_cache
-#from utils.binance.binance_a import get_or_create_binance_api  # ✅ DÜZELTME: Factory fonksiyonunu import et
-from utils.binance.binance_a import BinanceAggregator
 
-from utils.binance.binance_request import BinanceHTTPClient
-from utils.binance.binance_circuit_breaker import CircuitBreaker
+from utils.binance_api.binance_exceptions import BinanceAPIError, BinanceAuthenticationError
+from utils.binance_api.binance_request import BinanceHTTPClient
+from utils.binance_api.binance_circuit_breaker import CircuitBreaker
+#from utils.binance_api.binance_a import
+from utils.binance_api.binance_a import (
+    BinanceAggregator, 
+    MultiUserBinanceAggregator,
+)
+
+from utils.apikey_manager import APIKeyManager, AlarmManager, TradeSettingsManager
+from utils.context_logger import setup_context_logging, get_context_logger, ContextAwareLogger
+from utils.performance_monitor import monitor_performance, PerformanceMonitor
+from utils.security_auditor import security_auditor
+
 from config import BotConfig, get_config, get_telegram_token, get_admins
 
+
+#-1-
+# Merkezi Bot Factory Fonksiyonu
+async def create_bot_instance(config: Optional[BotConfig] = None) -> Bot:
+    """Merkezi bot instance oluşturucu"""
+    bot_instance = Bot(
+        token=get_telegram_token(),
+        default=DefaultBotProperties(
+            parse_mode=ParseMode.HTML,
+            # Config'den diğer ayarlar
+        )
+    )
+    init_bot_data(bot_instance)
+    
+    if config:
+        bot_instance.data['config'] = config
+
+    
+    logger.info("✅ Bot instance created with consistent data dict")
+    return bot_instance
+
+# -2-
+# Bot.data İçin Standardize Edilmiş Structure
+
+def init_bot_data(bot_instance: Bot) -> None:
+    """Bot data structure'ını standardize et"""
+    if not hasattr(bot_instance, 'data') or bot_instance.data is None:
+        bot_instance.data = {}
+    
+    # ✅ DAHA GÜVENLİ STRUCTURE
+    standard_data = {
+        'binance_api': None,
+        'start_time': datetime.now(),
+        'user_sessions': {},
+        'circuit_breakers': {},
+        'metrics': {
+            'messages_processed': 0,
+            'errors_count': 0,
+            'last_health_check': None,
+            'active_users': 0  # ✅ YENİ METRİK
+        },
+        'config': None,
+        'aggregator': None,
+        'health_status': 'initializing'  # ✅ YENİ DURUM TAKİBİ
+    }
+    
+    # Deep merge yap (sadece eksik key'leri ekle)
+    for key, default_value in standard_data.items():
+        if key not in bot_instance.data:
+            bot_instance.data[key] = default_value
+        elif isinstance(default_value, dict) and isinstance(bot_instance.data[key], dict):
+            # Nested dict'leri merge et
+            for sub_key, sub_value in default_value.items():
+                if sub_key not in bot_instance.data[key]:
+                    bot_instance.data[key][sub_key] = sub_value
+                    
 # ---------------------------------------------------------------------
 # Config & Logging Setup
 # ---------------------------------------------------------------------
@@ -67,11 +135,23 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
+# Mevcut logging setup'tan SONRA ekle:
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+# ✅ CONTEXT-AWARE LOGGING SETUP
+setup_context_logging()
+logger = get_context_logger(__name__)
+
 
 # Global instances
 bot: Optional[Bot] = None
 dispatcher: Optional[Dispatcher] = None
-binance_api: Optional[Any] = None  # ✅ DÜZELTME: Specific type yerine Any
+#binance_api: Optional[Any] = None  # yerine
+binance_api: Optional[Union[BinanceAggregator, MultiUserBinanceAggregator]] = None
 app_config: Optional[BotConfig] = None
 runner: Optional[web.AppRunner] = None
 polling_task: Optional[asyncio.Task] = None
@@ -98,17 +178,82 @@ signal.signal(signal.SIGTERM, handle_shutdown)
 signal.signal(signal.SIGINT, handle_shutdown)
 
 # ---------------------------------------------------------------------
+# apikeys
+# ---------------------------------------------------------------------
+async def startup():
+    # Database tablolarını oluştur
+    apimanager = APIKeyManager.get_instance()
+    await apimanager.init_db()
+
+
+# ---------------------------------------------------------------------
 # Error Handler
 # ---------------------------------------------------------------------
 async def error_handler(event: ErrorEvent) -> None:
     """Global error handler for aiogram."""
-    logger.error(f"❌ Error handling update: {event.exception}")
+    exception = event.exception
     
+    # Security audit log
+    try:
+        user_id = getattr(event.update, 'from_user', None)
+        if user_id:
+            user_id = user_id.id
+            await security_auditor.audit_request(
+                user_id, 
+                "error", 
+                {"error_type": type(exception).__name__, "message": str(exception)}
+            )
+    except Exception as audit_error:
+        logger.error(f"Security audit failed: {audit_error}")
+    
+    # ✅ METRİK GÜNCELLEME
+    if bot and hasattr(bot, 'data') and 'metrics' in bot.data:
+        bot.data['metrics']['errors_count'] = bot.data['metrics'].get('errors_count', 0) + 1
+        
+    # Kritik hatalarda admin'e bildir
+    if isinstance(exception, (BinanceAuthenticationError, ConnectionError)):
+        await notify_admins_about_critical_error(exception)
+    
+    # ✅ YENİ: Circuit breaker durumu kontrolü
+    if isinstance(exception, (ConnectionError, asyncio.TimeoutError)):
+        user_id = getattr(event.update, 'from_user', None)
+        if user_id and hasattr(bot, 'data') and 'circuit_breakers' in bot.data:
+            user_id = user_id.id
+            if user_id in bot.data['circuit_breakers']:
+                await bot.data['circuit_breakers'][user_id].record_failure()
+
+    # Hata türlerine göre loglama
+    if isinstance(exception, (ConnectionError, asyncio.TimeoutError)):
+        logger.warning(f"🌐 Network error in update {event.update.update_id}: {exception}")
+        
+    elif isinstance(exception, BinanceAuthenticationError):
+        logger.error(f"🔐 Authentication error: {exception}")
+        # Admin'e bildirim zaten yukarıda yapıldı
+        
+    elif isinstance(exception, BinanceAPIError):
+        error_code = getattr(exception, 'code', 'N/A')
+        logger.error(f"📊 Binance API error (code: {error_code}): {exception}")
+        
+    elif isinstance(exception, ValueError):
+        logger.warning(f"⚠️ Validation error: {exception}")
+        
+    elif hasattr(exception, 'code'):  # Diğer API exception'ları için
+        logger.error(f"🔧 API error (code: {exception.code}): {exception}")
+        
+    elif "auth" in str(exception).lower() or "token" in str(exception).lower():
+        logger.error(f"🔐 Authentication error (detected): {exception}")
+        
+    else:
+        logger.error(f"❌ Unexpected error in update {event.update.update_id}: {exception}", 
+                    exc_info=True)  # Stack trace için exc_info
+
+    # Kullanıcıya hata mesajı gönder (güvenli şekilde)
     try:
         if getattr(event.update, "message", None):
             await event.update.message.answer("❌ Bir hata oluştu, lütfen daha sonra tekrar deneyin.")
     except Exception as e:
         logger.error(f"❌ Failed to send error message: {e}")
+
 
 # ---------------------------------------------------------------------
 # Rate Limiting Filter
@@ -239,10 +384,16 @@ async def initialize_binance_api() -> Optional[Any]:
         #return binance_api_instance
         return aggregator
         
-    except Exception as e:
-        logger.error(f"❌ Binance API initialization failed: {e}")
+    # YENİ:
+    except (ConnectionError, TimeoutError) as e:
+        logger.error(f"🌐 Network error during Binance API init: {e}")
+        raise ConnectionError(f"Binance API connection failed: {e}") from e
+    except BinanceAuthenticationError as e:
+        logger.error(f"🔐 Authentication error during Binance API init: {e}")
         raise
-
+    except Exception as e:
+        logger.error(f"❌ Unexpected error during Binance API init: {e}")
+        raise
 
 # ---------------------------------------------------------------------
 # Handler Loading with Debug Information
@@ -274,31 +425,43 @@ async def initialize_handlers(dispatcher_instance: Dispatcher) -> Dict[str, int]
         logger.info(f"✅ {load_results.get('loaded', 0)} handlers loaded successfully")
         return load_results
         
+    # YENİ:
+    except (ImportError, AttributeError) as e:
+        logger.error(f"📁 Handler import error: {e}")
+        return {"loaded": 0, "failed": 1, "error_type": "import"}
     except Exception as e:
-        logger.error(f"❌ Handler loading failed: {e}")
-        return {"loaded": 0, "failed": 1}
+        logger.error(f"❌ Unexpected handler loading error: {e}")
+        return {"loaded": 0, "failed": 1, "error_type": "unknown"}
 
 # ---------------------------------------------------------------------
 # Lifespan Management (Async Context Manager)
 # ---------------------------------------------------------------------
+
 @asynccontextmanager
 async def lifespan():
     """Manage application lifecycle with async context manager."""
     global bot, dispatcher, binance_api, app_config, polling_task
     
     try:
+        # ✅ PERFORMANCE MONITORING CONTEXT
+        ContextAwareLogger.add_context('lifecycle_phase', 'initialization')
+        
         # Load configuration
         app_config = await get_config()
+        ContextAwareLogger.add_context('trading_enabled', app_config.ENABLE_TRADING)
+        ContextAwareLogger.add_context('webhook_mode', app_config.USE_WEBHOOK)
+        
+        # ✅ Aggregator başlat (binance_a)
+        aggregator = await MultiUserBinanceAggregator.create()
+        DIContainer.register('binance_aggregator', aggregator)
         
         # Initialize bot with default properties
-        bot = Bot(
-            token=get_telegram_token(),
-            default=DefaultBotProperties(
-                parse_mode=ParseMode.HTML,
-            )
-        )
-        bot.data = {}   # ✅ FIX: Bot nesnesine data dict ekle
+        bot = await create_bot_instance()
         
+        # ✅ PERFORMANCE METRICS'I BOT DATA'YA EKLE (bot oluşturulduktan sonra)
+        if bot and hasattr(bot, 'data'):
+            bot.data['performance_monitor'] = PerformanceMonitor.get_instance()
+            logger.info("✅ Performance monitor added to bot.data")
         
         # Initialize dispatcher with main router and error handler
         main_router = Router()
@@ -332,13 +495,27 @@ async def lifespan():
             polling_task = asyncio.create_task(start_polling())
             logger.info("✅ Polling mode started for local development")
         
-        logger.info("✅ Application components initialized")
+        # ✅ LIFECYCLE CONTEXT'İ TEMİZLE (yield'den önce)
+        ContextAwareLogger.remove_context('lifecycle_phase')
+        
+        logger.info("✅ Application components initialized with enhanced logging")
         yield
         
-    except Exception as e:
-        logger.error(f"❌ Application initialization failed: {e}")
+    # YENİ:
+    except (ConnectionError, TimeoutError) as e:
+        logger.error(f"🌐 Network error during app initialization: {e}")
         raise
+    except BinanceAuthenticationError as e:
+        logger.error(f"🔐 Auth error during app initialization: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"❌ Critical app initialization error: {e}", exc_info=True)
+        raise
+        
     finally:
+        # ✅ LIFECYCLE CONTEXT'İ TEMİZLE (finally'de de temizle)
+        ContextAwareLogger.remove_context('lifecycle_phase')
+        
         # Cleanup resources
         cleanup_tasks = []
         
@@ -368,34 +545,143 @@ async def lifespan():
                     logger.warning(f"⚠️ Cleanup task failed: {result}")
         
         logger.info("🛑 Application resources cleaned up")
+        
+
 
 # ---------------------------------------------------------------------
 # Health Check Endpoints
 # ---------------------------------------------------------------------
-async def health_check(request: web.Request) -> web.Response:
-    """Health check endpoint for Render and monitoring."""
-    try:
-        services_status = await check_services()
 
-         # Handler durumunu da kontrol et
-        handler_status = {
-            "total_handlers": len(dispatcher.sub_routers) if dispatcher else 0,
-            "handlers_loaded": True if dispatcher and dispatcher.sub_routers else False
-        }
+async def health_check(request: web.Request) -> web.Response:
+    """Enhanced health check with comprehensive metrics and timeout.
+    # Farklı timeout değerleri:
+    async with asyncio.timeout(5):   # ⚡ AGGRESSIVE - internal monitoring
+    async with asyncio.timeout(10):  # ✅ BALANCED - production için ideal  
+    async with asyncio.timeout(30):  # 🐌 LENIENT - development için
+    """
+    try:
+        # ✅ 10 saniye timeout ekle
         
+        
+        
+        async with asyncio.timeout(10):  # 10 second timeout
+            return await _perform_health_check()
+    except TimeoutError:
+        logger.warning("⏰ Health check timeout - services responding slowly")
         return web.json_response({
-            "status": "healthy",
-            "service": "mbot1-telegram-bot",
-            "platform": "render" if "RENDER" in os.environ else ("railway" if "RAILWAY" in os.environ else "local"),
-            "timestamp": asyncio.get_event_loop().time(),
-            "handlers": handler_status,
-            "services": services_status
-        })
+            "status": "timeout", 
+            "message": "Health check took too long",
+            "timestamp": datetime.now().isoformat()
+        }, status=503)
     except Exception as e:
+        logger.error(f"❌ Health check failed: {e}")
         return web.json_response({
             "status": "unhealthy",
-            "error": str(e)
+            "error": str(e),
+            "timestamp": datetime.now().isoformat(),
+            "critical": True
         }, status=500)
+
+
+async def _perform_health_check() -> web.Response:
+    """Internal health check implementation without timeout.    """
+    services_status = await check_services()
+    
+    # ✅ PERFORMANCE METRİKLERİNİ AL
+    performance_metrics = {}
+    try:
+        monitor = PerformanceMonitor.get_instance()
+        performance_summary = monitor.get_summary()
+        performance_metrics = {
+            'monitored_functions': performance_summary['total_functions_monitored'],
+            'total_calls': performance_summary['total_calls'],
+            'avg_call_time': round(performance_summary['average_call_time'], 3),
+            'top_slow_functions': performance_summary['top_slow_functions']
+        }
+    except Exception as e:
+        performance_metrics = {'error': str(e)}
+        
+    
+    # ✅ AGGREGATOR DURUMU KONTROLÜ EKLE
+    aggregator_status = "unknown"
+    aggregator_metrics = {}
+    try:
+        aggregator = DIContainer.resolve('binance_aggregator')
+        if aggregator:
+            aggregator_status = "healthy"
+            # Aggregator metrics'ını da ekle
+            aggregator_metrics = aggregator.get_stats()
+    except Exception as e:
+        aggregator_status = f"error: {str(e)}"
+
+    # Handler durumunu da kontrol et
+    handler_status = {
+        "total_handlers": len(dispatcher.sub_routers) if dispatcher else 0,
+        "handlers_loaded": True if dispatcher and dispatcher.sub_routers else False,
+        "router_names": [getattr(r, 'name', 'unnamed') for r in dispatcher.sub_routers] if dispatcher else []
+    }
+    
+    # ✅ GELİŞMİŞ BOT METRİKLERİ
+    bot_metrics = {
+        "basic": {},
+        "performance": {},
+        "business": {}
+    }
+    
+    if bot and hasattr(bot, 'data') and bot.data:
+        # Basic metrics
+        basic_metrics = bot.data.get('metrics', {})
+        bot_metrics["basic"] = basic_metrics
+        
+        # Performance metrics
+        if 'start_time' in bot.data:
+            uptime = datetime.now() - bot.data['start_time']
+            bot_metrics["performance"]["uptime_seconds"] = uptime.total_seconds()
+            bot_metrics["performance"]["uptime_human"] = str(uptime).split('.')[0]
+            bot_metrics["performance"]["start_time"] = bot.data['start_time'].isoformat()
+        
+        # Business metrics
+        if 'user_sessions' in bot.data:
+            bot_metrics["business"]["active_users"] = len(bot.data['user_sessions'])
+            bot_metrics["business"]["user_ids"] = list(bot.data['user_sessions'].keys())[:10]
+        
+        if 'circuit_breakers' in bot.data:
+            bot_metrics["business"]["active_circuit_breakers"] = len(bot.data['circuit_breakers'])
+            
+        # Binance API status
+        if 'binance_api' in bot.data and bot.data['binance_api']:
+            bot_metrics["business"]["binance_api_connected"] = True
+        else:
+            bot_metrics["business"]["binance_api_connected"] = False
+    
+    # ✅ MEMORY USAGE
+    import psutil
+    process = psutil.Process()
+    memory_info = process.memory_info()
+    
+    return web.json_response({
+        "status": "healthy",
+        "service": "mbot1-telegram-bot",
+        "platform": "render" if "RENDER" in os.environ else ("railway" if "RAILWAY" in os.environ else "local"),
+        "timestamp": asyncio.get_event_loop().time(),
+        "timestamp_iso": datetime.now().isoformat(),
+        "handlers": handler_status,
+        "services": services_status,
+        "bot_metrics": bot_metrics,
+        "performance_metrics": performance_metrics,
+        "aggregator_status": aggregator_status,
+        "aggregator_metrics": aggregator_metrics,
+        "multi_user_enabled": True,  # ✅ YENİ
+        "system": {
+            "python_version": os.sys.version.split()[0],
+            "aiohttp_version": aiohttp.__version__,
+            "environment": "production" if not app_config.DEBUG else "development",
+            "memory_usage_mb": round(memory_info.rss / 1024 / 1024, 2),
+            "cpu_percent": psutil.cpu_percent(interval=0.1)
+        }
+    })
+    
+
 
 async def readiness_check(request: web.Request) -> web.Response:
     """Readiness check for Kubernetes and load balancers."""
@@ -430,6 +716,8 @@ async def version_info(request: web.Request) -> web.Response:
 async def on_startup(bot: Bot) -> None:
     """Execute on application startup."""
     global app_config
+    aggregator = await MultiUserBinanceAggregator.create()
+    # aggregator'ı global bir yerde saklayın
     
     try:
         # Set webhook if webhook is configured
@@ -487,6 +775,7 @@ async def on_shutdown(bot: Bot) -> None:
 
 # ---------------------------------------------------------------------
 # Main Application Factory
+# ---------------------------------------------------------------------
 # ---------------------------------------------------------------------
 async def create_app() -> web.Application:
     """Create and configure aiohttp web application."""
@@ -546,6 +835,7 @@ async def create_app() -> web.Application:
         logger.info(f"🚀 Application configured on port {app_config.WEBAPP_PORT}")
         
         return app
+
 
 # ---------------------------------------------------------------------
 # Utility Functions
@@ -626,11 +916,8 @@ async def initialize_polling_mode() -> None:
     
     try:
         # Bot ve Dispatcher oluştur
-        bot = Bot(
-            token=get_telegram_token(),
-            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-        )
-        bot.data = {}   # ✅ FIX: Bot nesnesine data dict ekle
+        bot = await create_bot_instance()
+
         
         dispatcher = Dispatcher()
 
@@ -660,20 +947,27 @@ async def initialize_polling_mode() -> None:
         logger.info("🤖 Bot polling modunda başlatılıyor...")
         await dispatcher.start_polling(bot)
 
-    except Exception as e:
-        logger.error(f"❌ Polling mode initialization failed: {e}")
+    # YENİ:
+    except (ConnectionError, TimeoutError) as e:
+        logger.error(f"🌐 Network error in polling mode: {e}")
         raise
-
+    except BinanceAuthenticationError as e:
+        logger.error(f"🔐 Auth error in polling mode: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"❌ Unexpected error in polling mode: {e}")
+        raise
 # ---------------------------------------------------------------------
 # Main Entry Point
 # ---------------------------------------------------------------------
 async def main() -> None:
     global app_config, runner, bot, dispatcher
-
+    
     try:
         # Config yükle
         app_config = await get_config()
-
+        # ✅ Aggregator'ı burada oluşturma - lifespan'de yapılıyor
+        
         logger.info(f"🏗️ Platform detected: {'Render' if 'RENDER' in os.environ else 'Local'}")
         logger.info(f"🌐 Environment: {'production' if not app_config.DEBUG else 'development'}")
         logger.info(f"🚪 Port: {app_config.WEBAPP_PORT}")
@@ -698,9 +992,18 @@ async def main() -> None:
             await shutdown_event.wait()
             logger.info("👋 Shutdown signal received, exiting...")
 
-    except Exception as e:
-        logger.error(f"🚨 Critical error in main(): {e}")
+
+    # YENİ:
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("👋 Application terminated by user")
         raise
+    except (ConnectionError, TimeoutError) as e:
+        logger.error(f"🌐 Network critical error: {e}")
+        raise
+    except Exception as e:
+        logger.critical(f"💥 Fatal error in main(): {e}")
+        raise
+        
     finally:
         # Cleanup
         if runner:
