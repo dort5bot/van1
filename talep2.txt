@@ -2,6 +2,8 @@ bu dosyadaki içerikleri istenen modül ve bu modülün yapısını açıklar
 =================================================================
 ===	istenen analiz modülüne ait özellikler
 =================================================================
+Notlar:Gerekli Endpoint şunlar için /fapi/v1/account + /fapi/v1/positionRisk + /fapi/v2/balance yerine /fapi/v2/account kullanılacak
+
 Modül adı -  .py dosya adı -  Gerekli Endpoint(ler) -  API Türü -  eklenecek Zorunlu Klasik Metrikler -  eklenecek Profesyonel Metrikler (öncelik: * yüksek / ** orta / *** düşük) -  Amaç -  Çıktı Türü -  Komut -  İş Tipi -  Paralel Tür -  
 A. Trend & Momentum (TA) -  trend_moment.py -  /api/v3/klines, /api/v3/ticker/24hr, /api/v3/avgPrice -  Spot Public -  EMA, RSI, MACD, Bollinger Bands, ATR + ADX (Directional Index), Stochastic RSI, Momentum Oscillator -  *Kalman Filter Trend, *Z-Score Normalization, **Wavelet Transform, **Hilbert Transform Slope, **Fractal Dimension Index (FDI) -  Fiyat yönü & momentum gücü -  Trend Score (0–1) -  /trend, /t -  CPU-bound -  Batch -  
 
@@ -399,3 +401,5 @@ TREND_CONFIG = TrendConfig(
 
 # Binance API imports
 from utils.binance_api.binance_a import BinanceAggregator, MultiUserBinanceAggregator
+Notlar:/fapi/v1/account + /fapi/v1/positionRisk + /fapi/v2/balance yerine /fapi/v2/account kullanılacak
+
