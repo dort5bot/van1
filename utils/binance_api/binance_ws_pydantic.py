@@ -18,7 +18,7 @@ Referanslar:
 - https://binance-docs.github.io/apidocs/spot/en/#websocket-market-streams
 - https://binance-docs.github.io/apidocs/futures/en/#websocket-market-streams
 """
-
+#binance_api/binance_ws_Pydantic.py
 import json  
 from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Union, Literal

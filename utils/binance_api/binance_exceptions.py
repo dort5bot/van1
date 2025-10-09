@@ -1,5 +1,5 @@
 """
-utils/binance/binance_exceptions.py
+utils/binance_api/binance_exceptions.py
 v7
 Binance API custom exceptions.
 """
@@ -122,6 +122,10 @@ class BinanceWebSocketError(BinanceError):
             return f"WebSocket Error [Connection {self.connection_id}]: {self.message}"
         return f"WebSocket Error: {self.message}"
 
+
+class BinanceValidationError(BinanceAPIError):
+    """Exception raised for general validation errors."""
+    pass
 
 
 class BinanceRateLimitError(BinanceAPIError):

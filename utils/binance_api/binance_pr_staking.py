@@ -14,8 +14,8 @@ import logging
 import asyncio
 
 from .binance_pr_base import BinancePrivateBase
-#from .binance_exceptions import BinanceAPIError, BinanceRequestError, BinanceRateLimitError, BinanceAuthError, BinanceValidationError
-from .binance_exceptions import BinanceAPIError, BinanceRequestError, BinanceRateLimitError, BinanceAuthenticationError  # BinanceValidationError yoksa çıkar
+from .binance_exceptions import BinanceAPIError, BinanceRequestError, BinanceRateLimitError, BinanceAuthenticationError  
+
 
 logger = logging.getLogger(__name__)
 

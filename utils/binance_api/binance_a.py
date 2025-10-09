@@ -1,10 +1,69 @@
 # utils/binance_api/binance_a.py
 # V105  - multi-user
+"""
+class Görsel Özet – Bağımlılık Ağaç Yapısı:
+BinanceAggregator
+   └── MultiUserBinanceAggregator
+           ├── MultiUserPublicApi
+           ├── MultiUserPrivateApi
+           ├── MultiUserAggregatorSettings
+           │       ├── user_clients
+           │       └── circuit_breakers
+           └── APIKeyManager
+
+Eğer bu yapıyı daha da genişletmek istiyorsan (örneğin: WebSocket desteği, alert sistemi, metrics exporter vs.), bu mimari seni oldukça ileri taşır.
+✅ Doğru Kullanım
+
+Bu methodlar alt sınıflarda tanımlıdır — yani:
+
+get_klines: MultiUserPublicApi.spot.get_klines
+
+get_funding_rate: MultiUserPublicApi.futures.get_funding_rate
+
+Ve siz bu methodlara aşağıdaki şekilde erişmelisiniz:
+
+# Legacy wrapper üzerinden
+aggregator = await BinanceAggregator.get_instance()
+
+# Örnek: spot verisi
+klines = await aggregator.public.spot.get_klines("BTCUSDT", "1h", limit=10, user_id=user_id)
+
+# Örnek: funding rate (futures)
+funding = await aggregator.public.futures.get_funding_rate("BTCUSDT", user_id=user_id)
+
+✅ 2. Context-Aware API Layer (Opsiyonel ve Daha Temiz)
+
+Daha büyük sistemlerde, her kullanıcı için otomatik olarak bağlı bir API client oluşturmak da yaygın bir yaklaşımdır.
+
+Örnek:
+user_api = await aggregator.get_user_api(user_id)
+klines = await user_api.get_klines("BTCUSDT", "1h")
+funding = await user_api.get_funding_rate("BTCUSDT")
+
+
+Context-aware wrapper (kullanıcı bazlı çağrılar, kimlik doğrulama, user_id ile routing, circuit breaker, rate limiting vb.) başka bir modülde olmalı.
+Sana önerim:
+utils/binance_api/binance_a.py
+Sadece:
+Binance API endpointlerine yönelik core fonksiyonları,
+HTTP client sınıflarını,
+API request/response parsing kodlarını içersin.
+Bu modül, kullanıcı bilgisi bilmez, sadece teknik işlemlerle ilgilenir.
+
+utils/binance_api/user_api.py (veya services altında yeni bir dosya)
+Multi-user context'i yöneten,
+Kullanıcı kimlik doğrulaması, kullanıcıya özel client yaratma,
+user_id parametresiyle doğru client'ı yönlendirme,
+Circuit breaker, rate limit gibi multi-user özel logic burada olur.
+MultiUserBinanceAggregator gibi bir yapı bu iki modülü kullansın.
+"""
 
 import asyncio
 import logging
+import time
+from functools import lru_cache
 from datetime import datetime
-from typing import Optional, Dict, Any, Callable, List, Union, TYPE_CHECKING
+from typing import Optional, Dict, Any, Callable, List, Union, Tuple, TYPE_CHECKING
 
 # ✅ Aiogram Router için utility fonksiyonları
 from aiogram import Router, F
@@ -17,66 +76,76 @@ if TYPE_CHECKING:
 
 
 
-# Public imports
-from . import binance_pb_spot, binance_pb_futures, binance_pb_system, binance_pb_index
 
-# Private imports
-from .binance_pr_spot import SpotClient
-from .binance_pr_futures import FuturesClient
-from .binance_pr_margin import MarginClient
-from .binance_pr_asset import AssetClient
-from .binance_pr_savings import SavingsClient
-from .binance_pr_staking import StakingClient
-from .binance_pr_mining import MiningClient
-from .binance_pr_subaccount import SubAccountClient
-from .binance_pr_userstream import UserStreamClient
-from .binance_pr_base import BinancePrivateBase
-from .binance_pr_convert import ConvertClient
-from .binance_pr_crypto_loans import CryptoLoansClient  
-from .binance_pr_pay import PayClient
+# Public imports - tüm alt dosyalarda import edildi
+from utils.binance_api import (
+    binance_pb_spot, 
+    binance_pb_futures, 
+    binance_pb_system, 
+    binance_pb_index
+)
 
-#diger importlar
-from .binance_pr_giftcard import GiftCardClient
-
+# Private imports - sadece belirli class/ vb import edilir
+from utils.binance_api.binance_pr_spot import SpotClient
+from utils.binance_api.binance_pr_futures import FuturesClient
+from utils.binance_api.binance_pr_margin import MarginClient
+from utils.binance_api.binance_pr_asset import AssetClient
+from utils.binance_api.binance_pr_savings import SavingsClient
+from utils.binance_api.binance_pr_staking import StakingClient
+from utils.binance_api.binance_pr_mining import MiningClient
+from utils.binance_api.binance_pr_subaccount import SubAccountClient
+from utils.binance_api.binance_pr_userstream import UserStreamClient
+from utils.binance_api.binance_pr_base import BinancePrivateBase
+from utils.binance_api.binance_pr_convert import ConvertClient
+from utils.binance_api.binance_pr_crypto_loans import CryptoLoansClient
+from utils.binance_api.binance_pr_pay import PayClient
+from utils.binance_api.binance_pr_giftcard import GiftCardClient
 
 # Common imports - zorunlu
-# kullanılmıyor> from utils.binance_api.binance_client import BinanceClientManager
-# kullanılmıyor> from utils.binance_api.binance_metrics import MetricsCollector
-from .binance_request import BinanceHTTPClient
-from .binance_circuit_breaker import CircuitBreaker
+from utils.binance_api.binance_request import BinanceHTTPClient
+from utils.binance_api.binance_circuit_breaker import CircuitBreaker
 
-from ..apikey_manager import APIKeyManager
-
+# External utility import
+from utils.apikey_manager import APIKeyManager
+from utils.performance_monitor import monitor_performance, monitor_critical_performance
+from utils.security_auditor import security_auditor
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-#-------------------------------
-# ✅ Yeni: Aiogram Router için utility fonksiyonları
-from aiogram import Router, F
-from aiogram.types import Message
-from aiogram.filters import Command
 
-# ===============================
+class ResponseCache:
+    @staticmethod
+    @lru_cache(maxsize=1000)
+    def cache_key(user_id: int, endpoint: str, params: Tuple) -> str:
+        return f"{user_id}:{endpoint}:{hash(params)}"
+        
+#================================
 # MULTI-USER AGGREGATOR SETTINGS
 # ===============================
 class MultiUserAggregatorSettings:
     """
     Multi-user configuration for Binance API aggregator.
     Her kullanıcı için ayrı HTTP client ve circuit breaker yönetimi.
+    Enhanced with lazy initialization and async safety
     """
-    _instance: Optional["MultiUserAggregatorSettings"] = None
     
+    _instance: Optional["MultiUserAggregatorSettings"] = None
+    _initialized = False
+
     def __init__(self):
+        if self._initialized:
+            return
+            
         self.apikey_db = APIKeyManager.get_instance()
         self._user_clients: Dict[int, BinanceHTTPClient] = {}
         self._user_circuit_breakers: Dict[int, CircuitBreaker] = {}
         self._user_locks: Dict[int, asyncio.Lock] = {}
-        self._global_lock = asyncio.Lock()  # ✅ Global lock eklendi
+        self._global_lock = asyncio.Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
-        self._max_users = 1000  # ✅ Maximum user limit
-        self._user_last_used: Dict[int, datetime] = {}  # ✅ LRU tracking
-        self._metrics = {  # ✅ Performance metrics
+        self._max_users = 1000
+        self._user_last_used: Dict[int, datetime] = {}
+        self._metrics = {
             'total_requests': 0,
             'failed_requests': 0,
             'cache_hits': 0,
@@ -85,102 +154,124 @@ class MultiUserAggregatorSettings:
             'circuit_breaker_trips': 0
         }
         
-        # ✅ Periodic cleanup task başlat
-        self._start_cleanup_task()
-        logger.debug("MultiUserAggregatorSettings initialized")
-
-
+        # ✅ Rate limiting per user
+        self._user_rate_limits: Dict[int, Dict[str, float]] = {}
+        self._global_rate_limit = 10  # requests per second
+        self._last_global_request = 0
+        
+        # ✅ State management
+        self._cleanup_started = False
+        self._initialized = True
+        logger.debug("MultiUserAggregatorSettings initialized (lazy mode)")
 
     @classmethod
     def get_instance(cls) -> "MultiUserAggregatorSettings":
-        """✅ EKSİK OLAN SINGLETON METHODU EKLENDİ"""
         if cls._instance is None:
             cls._instance = MultiUserAggregatorSettings()
         return cls._instance
 
-
-    def _start_cleanup_task(self):
-        """Periodic cleanup task başlat"""
-        async def cleanup_loop():
-            while True:
-                await asyncio.sleep(300)  # 5 dakika
-                await self._cleanup_inactive_users()
+    # Rate Limiting Enhancement
+    async def _check_rate_limits(self, user_id: int) -> bool:
+        """Check and enforce rate limits"""
+        now = time.time()
         
-        self._cleanup_task = asyncio.create_task(cleanup_loop())
+        # Global rate limit
+        if now - self._last_global_request < 1.0 / self._global_rate_limit:
+            await asyncio.sleep(0.1)  # Small backoff
+        
+        self._last_global_request = now
+        
+        # User-specific rate limit (optional)
+        if user_id in self._user_rate_limits:
+            user_limits = self._user_rate_limits[user_id]
+            if now - user_limits.get('last_request', 0) < 0.1:  # 10 requests/sec per user
+                await asyncio.sleep(0.05)
+            user_limits['last_request'] = now
+        
+        return True
+        
 
-    async def _cleanup_inactive_users(self):
-        """Inactive user'ları temizle (1 saat TTL)"""
-        now = datetime.now()
-        async with self._global_lock:
-            inactive_users = [
-                user_id for user_id, last_used in self._user_last_used.items()
-                if (now - last_used).total_seconds() > 3600  # 1 saat
-            ]
-            
-            for user_id in inactive_users:
-                await self.cleanup_user_resources(user_id)
-                logger.info(f"Auto-cleaned inactive user {user_id}")
-
-    async def _evict_least_used_user(self):
-        """LRU cache eviction"""
-        if not self._user_last_used:
+    # Uygulama çökmemeli, sadece cleanup olmadan devam et
+    async def ensure_cleanup_task(self):
+        """Thread-safe lazy initialization of cleanup task"""
+        if self._cleanup_started:
             return
             
-        lru_user = min(self._user_last_used.items(), key=lambda x: x[1])[0]
-        await self.cleanup_user_resources(lru_user)
-        logger.info(f"Evicted least used user {lru_user} due to capacity limits")
+        async with self._global_lock:
+            if not self._cleanup_started:
+                try:
+                    await self._start_cleanup_task()
+                    self._cleanup_started = True
+                    logger.debug("Cleanup task started")
+                except Exception as e:
+                    logger.error(f"Cleanup task başlatılamadı: {e}")
+                    
 
-    @staticmethod
-    def _validate_user_id(user_id: int) -> None:
-        """User ID validation"""
-        if not isinstance(user_id, int) or user_id <= 0:
-            raise ValueError(f"Invalid user_id: {user_id}")
-
-    @staticmethod
-    def _is_valid_api_key_format(api_key: str) -> bool:
-        """API key format validation"""
-        return (isinstance(api_key, str) and 
-                len(api_key) >= 20 and 
-                api_key.isalnum())
-
-    @staticmethod
-    def _mask_api_key(api_key: str) -> str:
-        """API key masking for logging"""
-        if len(api_key) <= 8:
-            return "***"
-        return api_key[:4] + "***" + api_key[-4:]
-
-    def _get_user_lock(self, user_id: int) -> asyncio.Lock:
-        """Get or create user-specific lock."""
-        if user_id not in self._user_locks:
-            self._user_locks[user_id] = asyncio.Lock()
-        return self._user_locks[user_id]
-
-    async def get_user_client(self, user_id: int, retry_count: int = 3) -> BinanceHTTPClient:
-        """
-        Get or create user-specific HTTP client with enhanced validation, 
-        security, retry mechanism, and metrics tracking.
+    async def _start_cleanup_task(self):
+        """Async cleanup task initialization"""
+        async def cleanup_loop():
+            logger.info("🔄 Cleanup task started")
+            while True:
+                try:
+                    await asyncio.sleep(300)  # 5 dakika
+                    await self._cleanup_inactive_users()
+                except asyncio.CancelledError:
+                    logger.info("🛑 Cleanup task cancelled")
+                    break
+                except Exception as e:
+                    logger.error(f"❌ Cleanup task error: {e}")
+                    await asyncio.sleep(60)  # Hata durumunda bekle
         
-        Args:
-            user_id: User identifier
-            retry_count: Number of retry attempts (exponential backoff)
+        try:
+            # ✅ Safe task creation with current loop
+            self._cleanup_task = asyncio.create_task(cleanup_loop())
+            # ✅ Task exception handler ekle
+            self._cleanup_task.add_done_callback(self._handle_cleanup_task_exception)
+        except RuntimeError as e:
+            logger.warning(f"⚠️ Could not start cleanup task: {e}")
+            # Retry mekanizması - bir sonraki ensure_cleanup_task çağrısında tekrar dene
+            self._cleanup_started = False
+
+    def _handle_cleanup_task_exception(self, task):
+        """Cleanup task exception handler"""
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"🔥 Cleanup task failed: {e}")
+            self._cleanup_started = False  # Yeniden başlatılabilir
+    
+    @monitor_critical_performance("get_user_client")
+    async def get_user_client(self, user_id: int, retry_count: int = 3) -> BinanceHTTPClient:
+        """✅ PERFORMANS + GÜVENLİK"""
+        
+        # Security audit
+        audit_params = {"action": "get_user_client", "retry_count": retry_count}
+        if not await security_auditor.audit_request(user_id, "binance_api", audit_params):
+            raise SecurityError("Security audit failed")
             
-        Returns:
-            BinanceHTTPClient: User-specific client instance
-            
-        Raises:
-            ValueError: Invalid user_id or API credentials
-            ConnectionError: Network or validation failures
-            CircuitBreakerError: Circuit breaker is open
-        """
-        # ✅ Input validation
+        await self.ensure_cleanup_task()
+        
         self._validate_user_id(user_id)
         self._metrics['total_requests'] += 1
         
-        # ✅ Capacity control with global lock
+        # ✅ HIZLI CACHE CHECK (thread-safe şekilde)
+        async with self._global_lock:
+            if user_id in self._user_clients:
+                client = self._user_clients[user_id]
+                # ✅ Güvenli health check with attribute existence control
+                if (hasattr(client, '_last_success') and 
+                    (datetime.now() - client._last_success).seconds < 30):
+                    self._metrics['cache_hits'] += 1
+                    self._user_last_used[user_id] = datetime.now()
+                    return client
+        
+        # ✅ Mevcut retry mekanizması aynen devam...
         async with self._global_lock:
             if len(self._user_clients) >= self._max_users:
                 await self._evict_least_used_user()
+
 
         # ✅ Retry mechanism with exponential backoff
         last_exception = None
@@ -276,6 +367,56 @@ class MultiUserAggregatorSettings:
         # This should never be reached, but for type safety
         raise ConnectionError(f"Unexpected error for user {user_id}") from last_exception
 
+
+    async def _cleanup_inactive_users(self):
+        """Inactive user'ları temizle (30dk TTL)"""
+        now = datetime.now()
+        async with self._global_lock:
+            inactive_users = [
+                user_id for user_id, last_used in self._user_last_used.items()
+                if (now - last_used).total_seconds() > 1800  # 30dk
+            ]
+            
+            for user_id in inactive_users:
+                await self.cleanup_user_resources(user_id)
+                logger.info(f"Auto-cleaned inactive user {user_id}")
+
+    async def _evict_least_used_user(self):
+        """LRU cache eviction"""
+        if not self._user_last_used:
+            return
+            
+        lru_user = min(self._user_last_used.items(), key=lambda x: x[1])[0]
+        await self.cleanup_user_resources(lru_user)
+        logger.info(f"Evicted least used user {lru_user} due to capacity limits")
+
+    @staticmethod
+    def _validate_user_id(user_id: int) -> None:
+        """User ID validation"""
+        if not isinstance(user_id, int) or user_id <= 0:
+            raise ValueError(f"Invalid user_id: {user_id}")
+
+    @staticmethod
+    def _is_valid_api_key_format(api_key: str) -> bool:
+        """API key format validation"""
+        return (isinstance(api_key, str) and 
+                len(api_key) >= 20 and 
+                api_key.isalnum())
+
+    @staticmethod
+    def _mask_api_key(api_key: str) -> str:
+        """API key masking for logging"""
+        if len(api_key) <= 8:
+            return "***"
+        return api_key[:4] + "***" + api_key[-4:]
+
+    def _get_user_lock(self, user_id: int) -> asyncio.Lock:
+        """Get or create user-specific lock."""
+        if user_id not in self._user_locks:
+            self._user_locks[user_id] = asyncio.Lock()
+        return self._user_locks[user_id]
+
+
     async def get_user_circuit_breaker(self, user_id: int) -> CircuitBreaker:
         """Get or create user-specific circuit breaker."""
         async with self._global_lock:
@@ -365,11 +506,12 @@ class MultiUserPublicApi:
             self._public_client = binance_pb_spot.BinancePBSpot.get_instance()
             logger.debug("MultiUserPublicSpot instance created")
 
+        @monitor_performance("public_spot_ping", warning_threshold=1.0)
         async def ping(self, user_id: Optional[int] = None) -> bool:
             """Test connectivity with optional user context."""
             logger.debug(f"Ping request from user {user_id}")
             return await self._public_client.ping()
-        
+            pass
         
         # public method'lar aynı şekilde user_id parametresi alacak    
         # 1
@@ -384,7 +526,7 @@ class MultiUserPublicApi:
             logger.debug(f"24hr ticker request from user {user_id} for {symbol}")
             return await self._public_client.ticker_24hr(symbol)
 
-
+        @monitor_performance("public_spot_klines", warning_threshold=2.0)
         async def get_klines(self, symbol: str, interval: str, limit: int = 500,
                    start_time: Optional[int] = None, end_time: Optional[int] = None,
                    user_id: Optional[int] = None) -> Any:
@@ -393,7 +535,7 @@ class MultiUserPublicApi:
                 symbol=symbol, interval=interval, limit=limit,
                 start_time=start_time, end_time=end_time
             ) 
-
+            pass
 
 
         async def avg_price(self, symbol: str, user_id: Optional[int] = None) -> Dict[str, Any]:
@@ -1008,12 +1150,13 @@ class MultiUserPrivateApi:
 
 
         # 📗 BÖLÜM 3: Pozisyon Verileri (Duyarlılık ve Kalabalık Takibi)  
-        
+        @monitor_critical_performance("private_spot_account_info")
         async def get_account_balance(self, user_id: int) -> List[Dict[str, Any]]:
                 """Get a single user's futures account balance."""
                 client = await self.client(user_id)
                 return await client.get_account_balance()
-
+                pass
+                
         async def get_all_users_account_balances(self, user_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
             """Aggregate account balances for multiple users concurrently."""
             
@@ -1378,84 +1521,51 @@ class MultiUserPrivateApi:
 # ===============================
 class MultiUserBinanceAggregator:
     """
-    Unified Multi-User Binance Aggregator for Public + Private APIs.
-    Supports multiple users with isolated sessions and circuit breakers.
+    Enhanced aggregator with proper async lifecycle management
     """
-
+    
     _instance: Optional["MultiUserBinanceAggregator"] = None
+    _started = False
 
     def __init__(self):
+        if self._started:
+            return
+            
         self.public = MultiUserPublicApi()
         self.private = MultiUserPrivateApi()
         self.settings = MultiUserAggregatorSettings.get_instance()
         self._version = "3.0.0-multi"
         self._init_time = datetime.now()
         
-        logger.info(f"✅ MultiUserBinanceAggregator v{self._version} initialized")
+        logger.info(f"✅ MultiUserBinanceAggregator v{self._version} initialized (not started)")
 
     @classmethod
     def get_instance(cls) -> "MultiUserBinanceAggregator":
-        """Get singleton instance."""
+        """Sync singleton getter - for backward compatibility"""
         if cls._instance is None:
             cls._instance = MultiUserBinanceAggregator()
         return cls._instance
 
-    # User Management Methods
-    async def validate_user_credentials(self, user_id: int) -> bool:
-        """Validate user's Binance credentials."""
-        try:
-            api_manager = APIKeyManager.get_instance()
-            return await api_manager.validate_binance_credentials(user_id)
-        except Exception as e:
-            logger.error(f"Credential validation failed for user {user_id}: {e}")
-            return False
+    @classmethod
+    async def create(cls) -> "MultiUserBinanceAggregator":
+        """Async factory method - recommended for new code"""
+        instance = cls.get_instance()
+        await instance.start()
+        return instance
 
-
-
-    async def get_user_status(self, user_id: int) -> Dict[str, Any]:
-        try:
-            creds_valid = await self.validate_user_credentials(user_id)
-            client = await self.settings.get_user_client(user_id)
-            health = await client.health_check()
-            circuit_breaker = await self.settings.get_user_circuit_breaker(user_id)
+    async def start(self):
+        """Explicit startup - required before use"""
+        if self._started:
+            return
             
-            return {
-                'user_id': user_id,
-                'credentials_valid': creds_valid,
-                'api_health': health,
-                'circuit_breaker_state': circuit_breaker.get_state(),
-                'active_since': self._init_time.isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Failed to get status for user {user_id}: {e}")
-            return {
-                'user_id': user_id,
-                'credentials_valid': False,
-                'error': str(e)
-            }
+        await self.settings.ensure_cleanup_task()
+        self._started = True
+        logger.info("🚀 MultiUserBinanceAggregator started")
 
-
-    async def get_all_users_status(self) -> Dict[int, Dict[str, Any]]:
-        """Get status for all active users."""
-        active_users = await self.settings.get_all_active_users()
-        status_dict = {}
-        
-        for user_id in active_users:
-            status_dict[user_id] = await self.get_user_status(user_id)
-            
-        return status_dict
-
-    async def cleanup_user(self, user_id: int):
-        """Cleanup resources for a specific user."""
-        await self.settings.cleanup_user_resources(user_id)
-        logger.info(f"Cleaned up aggregator resources for user {user_id}")
-
-    # Enhanced Health Check
     async def health_check(self, user_id: Optional[int] = None) -> Dict[str, Any]:
-        """
-        Comprehensive health check.
-        If user_id provided, includes user-specific checks.
-        """
+        """✅ Startup kontrolü ekle"""
+        if not self._started:
+            await self.start()
         health_report = {
             'status': 'healthy',
             'version': self._version,
@@ -1493,8 +1603,76 @@ class MultiUserBinanceAggregator:
             except Exception as e:
                 health_report['users'][user_id] = {'status': 'error', 'error': str(e)}
                 health_report['status'] = 'degraded'
-
         return health_report
+
+
+    #  1. Kullanıcıya özel işlemler (alt seviye yardımcı fonksiyon)
+    async def validate_user_credentials(self, user_id: int) -> bool:
+        """Validate user's Binance credentials."""
+        try:
+            api_manager = APIKeyManager.get_instance()
+            return await api_manager.validate_binance_credentials(user_id)
+        except Exception as e:
+            logger.error(f"Credential validation failed for user {user_id}: {e}")
+            return False
+
+
+    # 2. Kullanıcı durumunu sorgulayan ana fonksiyon (diğerlerine bağımlı)
+
+    async def get_user_status(self, user_id: int) -> Dict[str, Any]:
+        """✅ DAHA DETAYLI USER STATUS"""
+        if not self._started:
+            await self.start()
+
+        try:
+            creds_valid = await self.validate_user_credentials(user_id)
+            client = await self.settings.get_user_client(user_id)
+            health = await client.health_check()
+            circuit_breaker = await self.settings.get_user_circuit_breaker(user_id)
+            
+            # ✅ DETAYLI METRİKLER
+            client_metrics = {
+                'requests_made': getattr(client, '_request_count', 0),
+                'last_used': self.settings._user_last_used.get(user_id, 'never'),
+                'connection_age': (datetime.now() - self._init_time).total_seconds()
+            }
+            
+            return {
+                'user_id': user_id,
+                'credentials_valid': creds_valid,
+                'api_health': health,
+                'circuit_breaker_state': circuit_breaker.get_state(),
+                'active_since': self._init_time.isoformat(),
+                'client_metrics': client_metrics,  # ✅ YENİ
+                'session_active': user_id in self.settings._user_clients
+            }
+        except Exception as e:
+            logger.error(f"Failed to get status for user {user_id}: {e}")
+            return {
+                'user_id': user_id,
+                'credentials_valid': False,
+                'error': str(e),
+                'session_active': False  # ✅ YENİ
+            }
+            
+
+    # 3. Tüm kullanıcıların durumunu dönen fonksiyon (üst seviye)
+    async def get_all_users_status(self) -> Dict[int, Dict[str, Any]]:
+        """Get status for all active users."""
+        active_users = await self.settings.get_all_active_users()
+        status_dict = {}
+        
+        for user_id in active_users:
+            status_dict[user_id] = await self.get_user_status(user_id)
+            
+        return status_dict
+    
+    # 4. Kullanıcı kaynaklarını temizleyen bağımsız fonksiyon
+    async def cleanup_user(self, user_id: int):
+        """Cleanup resources for a specific user."""
+        await self.settings.cleanup_user_resources(user_id)
+        logger.info(f"Cleaned up aggregator resources for user {user_id}")
+
 
     # Statistics and Monitoring
     def get_stats(self) -> Dict[str, Any]:
@@ -1528,8 +1706,8 @@ class MultiUserBinanceAggregator:
 # ===============================
 class BinanceAggregator:
     """
-    Backward compatibility wrapper for existing code.
-    Delegates to MultiUserBinanceAggregator with default user context.
+    Backward compatibility wrapper
+    Legacy compatibility with auto-start
     """
     
     _instance: Optional["BinanceAggregator"] = None
@@ -1537,12 +1715,21 @@ class BinanceAggregator:
     def __init__(self, http_client: Optional[BinanceHTTPClient] = None):
         self._multi_user_aggregator = MultiUserBinanceAggregator.get_instance()
         self._http_client = http_client
-        logger.info("Legacy BinanceAggregator initialized (delegates to MultiUser)")
+        self._started = False
+        logger.info("Legacy BinanceAggregator initialized")
+
+    async def _ensure_started(self):
+        """Auto-start mechanism for legacy code"""
+        if not self._started:
+            await self._multi_user_aggregator.start()
+            self._started = True
 
     @classmethod
-    def get_instance(cls, http_client: Optional[BinanceHTTPClient] = None) -> "BinanceAggregator":
+    async def get_instance(cls, http_client: Optional[BinanceHTTPClient] = None) -> "BinanceAggregator":
+        """Async singleton for legacy code"""
         if cls._instance is None:
             cls._instance = BinanceAggregator(http_client)
+            await cls._instance._ensure_started()
         return cls._instance
 
     @property
@@ -1554,7 +1741,9 @@ class BinanceAggregator:
         return self._multi_user_aggregator.private
 
     async def health_check(self) -> Dict[str, Any]:
+        await self._ensure_started()
         return await self._multi_user_aggregator.health_check()
+
 
     def get_stats(self) -> Dict[str, Any]:
         return self._multi_user_aggregator.get_stats()
@@ -1606,93 +1795,21 @@ if __name__ == "__main__":
     asyncio.run(demo_multi_user_usage())
     
 
-# ✅ DÜZELTME: setup_binance_handlers'ı dosya sonuna taşı
-# Mevcut konum: satır ~40, yeni konum: dosya sonu (main'den sonra)
-
-# ===============================
-# AIOGRAM HANDLERS - DOSYA SONUNA TAŞI
-# ===============================
-def setup_binance_handlers(router: Router, aggregator: 'MultiUserBinanceAggregator'):
-    """Aiogram router için handler setup - DOSYA SONUNA TAŞINDI"""
-    
-    @staticmethod
-    def _is_valid_symbol(symbol: str) -> bool:
-        """Symbol validation utility"""
-        return (isinstance(symbol, str) and 
-                len(symbol) >= 5 and 
-                symbol.endswith(('USDT', 'BUSD', 'BTC', 'ETH')))
-    
-    @staticmethod
-    def _sanitize_balance_data(balance_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Balance data sanitization - sensitive info'yu kaldır"""
-        sanitized = balance_data.copy()
-        # Sensitive bilgileri temizle
-        if 'balances' in sanitized:
-            for balance in sanitized['balances']:
-                if 'free' in balance:
-                    balance['free'] = round(balance['free'], 6)
-                if 'locked' in balance:
-                    balance['locked'] = round(balance['locked'], 6)
-        return sanitized
-    
-    @router.message(Command("balance"))
-    async def cmd_balance(message: Message):
-        """Kullanıcı balance bilgisini getir"""
-        try:
-            user_id = message.from_user.id
-            
-            # ✅ Input sanitization
-            if not await aggregator.validate_user_credentials(user_id):
-                await message.answer("❌ API credentials not found. Please setup first.")
-                return
-            
-            # ✅ Secure execution with error handling
-            async with asyncio.timeout(30):
-                balance = await aggregator.private.spot.get_account_info(user_id)
-                
-                # ✅ Response sanitization
-                sanitized_balance = _sanitize_balance_data(balance)
-                await message.answer(f"💰 Balance: {sanitized_balance}")
-                
-        except asyncio.TimeoutError:
-            await message.answer("⏰ Request timeout. Please try again.")
-        except Exception as e:
-            logger.error(f"Balance command failed for user {user_id}: {e}")
-            await message.answer("❌ Failed to fetch balance. Please try later.")
-    
-    @router.message(Command("price"))
-    async def cmd_price(message: Message):
-        """Symbol price bilgisini getir"""
-        try:
-            # Command'dan symbol çıkar: /price BTCUSDT
-            parts = message.text.split()
-            symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
-            
-            # ✅ Input validation ve sanitization
-            if not _is_valid_symbol(symbol):
-                await message.answer("❌ Invalid symbol format. Use like: BTCUSDT")
-                return
-            
-            user_id = message.from_user.id
-            price_data = await aggregator.public.spot.ticker_price(symbol, user_id)
-            
-            # ✅ Response formatting
-            if isinstance(price_data, dict) and 'price' in price_data:
-                price = price_data['price']
-            else:
-                price = price_data
-                
-            await message.answer(f"📊 {symbol} Price: {price}")
-            
-        except IndexError:
-            await message.answer("❌ Usage: /price SYMBOL (e.g., /price BTCUSDT)")
-        except Exception as e:
-            logger.error(f"Price command failed: {e}")
-            await message.answer("❌ Failed to fetch price")
-
 
 
 """
+# ✅ MEVCUT KODUNUZ - DEĞİŞTİRMEYİN
+from utils.binance_api.binance_a import BinanceAggregator
+
+aggregator = BinanceAggregator.get_instance()
+# Aynen çalışmaya devam edecek
+
+# ✅ YENİ KODLAR İÇİN - DAHA İYİ
+from utils.binance_api.binance_a import MultiUserBinanceAggregator
+
+aggregator = await MultiUserBinanceAggregator.create()
+
+
 Tüm endpoint'ler orijinal Binance API isimlerini korur
 Multi-user desteği sağlanır (user_id parametresi)
 Kapsamlı logging

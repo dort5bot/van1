@@ -7,6 +7,7 @@ import asyncio
 import time
 import logging
 import inspect
+from asyncio import timeout, TimeoutError
 from dataclasses import dataclass
 from collections import OrderedDict
 from typing import Any, Awaitable, Callable, Optional, Dict, Tuple, List

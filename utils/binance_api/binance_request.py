@@ -814,7 +814,17 @@ class BinanceHTTPClient:
         }
         
 
-
+# Connection Timeout Handling
+class TimeoutAwareClient:
+    def __init__(self, timeout: float = 30.0):
+        self.timeout = timeout
+    
+    async def request_with_timeout(self, method: str, url: str, **kwargs):
+        try:
+            async with asyncio.timeout(self.timeout):
+                return await self._session.request(method, url, **kwargs)
+        except asyncio.TimeoutError:
+            raise ConnectionError(f"Request timeout after {self.timeout}s")
 
 
 """ # utils/binance/binance_request.py
