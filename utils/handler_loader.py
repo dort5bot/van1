@@ -1,4 +1,5 @@
 # utils/handler_loader.py
+#v1008
 import importlib
 import pkgutil
 import logging
@@ -38,9 +39,15 @@ async def load_handlers(dispatcher: Dispatcher) -> dict:
                 results["failed"] += 1
                 logger.warning(f"⚠️ Router bulunamadı: {module_name}")
                 
+        #except Exception as e:
+            #results["failed"] += 1
+            #logger.error(f"❌ Handler yüklenirken hata: {module_name} - {e}")
+    
         except Exception as e:
             results["failed"] += 1
-            logger.error(f"❌ Handler yüklenirken hata: {module_name} - {e}")
+            logger.exception(f"❌ Handler yüklenirken hata: {module_name}")
+
+
 
     logger.info(f"📊 Handler yükleme sonucu: {results['loaded']} başarılı, {results['failed']} başarısız")
     return results
