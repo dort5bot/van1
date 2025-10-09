@@ -1,9 +1,5 @@
 # -----------------------------------------------------------------------------
 # File: utils/data_sources/base_client.py
-# from .data_provider import DataProvider  # noqa: F401
-
-
-from __future__ import annotations
 """
 BaseClient: Shared infrastructure for API clients
 - Singleton aiohttp.ClientSession (connection pooling)
@@ -12,6 +8,7 @@ BaseClient: Shared infrastructure for API clients
 - Retry with exponential backoff
 - API key validation & masking helpers
 """
+from __future__ import annotations
 
 import asyncio
 import aiohttp
