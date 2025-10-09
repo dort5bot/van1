@@ -1,0 +1,499 @@
+bu dosyadaki içerikleri istenen modül ve bu modülün yapısını açıklar
+=================================================================
+===	istenen analiz modülüne ait özellikler
+=================================================================
+Modül adı -  .py dosya adı -  Gerekli Endpoint(ler) -  API Türü -  eklenecek Zorunlu Klasik Metrikler -  eklenecek Profesyonel Metrikler (öncelik: * yüksek / ** orta / *** düşük) -  Amaç -  Çıktı Türü -  Komut -  İş Tipi -  Paralel Tür -  
+A. Trend & Momentum (TA) -  trend_moment.py -  /api/v3/klines, /api/v3/ticker/24hr, /api/v3/avgPrice -  Spot Public -  EMA, RSI, MACD, Bollinger Bands, ATR + ADX (Directional Index), Stochastic RSI, Momentum Oscillator -  *Kalman Filter Trend, *Z-Score Normalization, **Wavelet Transform, **Hilbert Transform Slope, **Fractal Dimension Index (FDI) -  Fiyat yönü & momentum gücü -  Trend Score (0–1) -  /trend, /t -  CPU-bound -  Batch -  
+B. Piyasa Rejimi (Volatilite & Yapı) -  volat_regime.py -  /api/v3/klines, /fapi/v1/markPrice, /fapi/v1/fundingRate -  Spot + Futures Public -  Historical Volatility, ATR, Bollinger Width + Variance Ratio Test, Range Expansion Index -  *GARCH(1,1), *Entropy Index, **Hurst Exponent, ***Regime Switching Model -  Trend / Range modu ayrımı -  Regime Label (Trend, Range) -  /regime, /rg -  CPU-bound -  Batch -  
+C. Derivatives & Sentiment (Pozisyon Verileri) -  deriv_sentim.py -  /fapi/v1/fundingRate, /fapi/v1/openInterestHist, /fapi/v1/longShortRatio -  Futures Public -  Funding Rate, Open Interest (OI), Long/Short Ratio + OI Change Rate, Funding Rate Skew, Volume Imbalance Index -  *Liquidation Heatmap, **OI Delta Divergence, **Volatility Skew, ***Gamma Exposure -  Trader positioning & sentiment eğilimi -  Sentiment Score (-1→1) -  /sentiment, /s -  I/O-bound + hafif hesap -  Async -  
+D. Order Flow & Microstructure -  order_micros.py -  /fapi/v1/depth, /fapi/v1/trades, /fapi/v1/ticker/bookTicker -  Futures Public -  Orderbook Imbalance, Spread, Market Buy/Sell Pressure + Trade Aggression Ratio, Slippage, Depth Elasticity -  *CVD (Cumulative Volume Delta), **Order Flow Imbalance Index (OFI), **Taker Dominance Ratio, ***Liquidity Density Map -  Anlık yön & likidite baskısı -  Liquidity Pressure Score (0–1) -  /flow, /f -  Stream + CPU (karma) -  Stream -  
+E. Korelasyon & Lead-Lag (Liderlik Analizi) -  corr_lead.py -  /api/v3/klines (multi-symbol), /fapi/v1/markPriceKlines -  Spot + Futures Public -  Pearson Corr, Beta, Rolling Covariance + Partial Correlation, Rolling Lead-Lag Delta -  *Granger Causality Test, *Dynamic Time Warping (DTW), **Canonical Correlation, ***Vector AutoReg (VAR) -  Coin’ler arası liderlik & yön takibi -  Correlation Lead-Lag Matrix -  /corr, /c -  CPU + I/O karışık -  Batch -  
+F. On-Chain & Makro (Opsiyonel) -  onchain.py.py -  Dış kaynak: Glassnode, CryptoQuant, Farside -  External Public -  Stablecoin Flow, CEX Inflow/Outflow, ETF Net Flow + Exchange Net Position Change, Realized Cap, NUPL -  *Net Realized Profit/Loss, *Exchange Whale Ratio, **MVRV Z-Score, ***SOPR -  Zincir üstü likidite & makro eğilim -  Macro Score (0–1) -  /macro, /ma -  I/O-bound -  Async -  
+G. Risk & Exposure Management -  risk_expos.py -  /fapi/v1/liquidationOrders, /fapi/v1/premiumIndex, /api/v3/klines -  Spot + Futures Public -  ATR Stop, Liquidation Zones, Max Drawdown + Volatility Targeting, Position Leverage Ratio -  *Value-at-Risk (VaR), *Expected Shortfall (CVaR), **Sharpe/Sortino Dynamic, ***ATR-based Adaptive Stop -  Risk kontrolü & sinyal güvenliği -  Risk Score (0–1) -  /risk,/r -  - -  Batch -  
+H. Market Micro Alpha (Tick-Level Alpha Factor) -  microalpha.py.py -  /fapi/v1/depth, /fapi/v1/trades, WebSocket /ws/<symbol>@trade, /ws/<symbol>@depth@100ms -  Futures Public (Real-Time) -  Tick Volume, Spread, Bid/Ask Imbalance, Trade Direction Ratio + Microprice, Quote Stability Index, Order Duration -  *Cumulative Volume Delta (CVD), *Order Flow Imbalance Index (OFI), *Microprice Deviation, **Market Impact Model (Kyle’s λ), **Latency Adjusted Flow Ratio, ***High-Frequency Z-score -  Gerçek zamanlı mikro-yapı yönü ve hacimsel alpha faktörü üretmek -  Micro Alpha Score (0–1) -  /micro, /mi -  - -  Async -  
+I. Portfolio Optimization & Allocation -  port_alloc.py -  /api/v3/account, /fapi/v2/balance -  Private -  Sharpe Ratio, Correlation Matrix, VaR + Conditional Beta, Sortino Ratio, Drawdown Correlation -  *Black-Litterman Model, **Hierarchical Risk Parity (HRP), ***Risk Parity -  Dinamik portfolio optimizasyonu -  Allocation Weights -  /allocate, /al -  - -  Batch -  
+J. Regime Change Detection & Anomaly -  regime_anomal.py -  /api/v3/klines, /fapi/v1/markPrice -  Spot + Futures -  Z-Score, Rolling Mean/Std + Rolling Skewness/Kurtosis, Cumulative Return Deviation -  *Changepoint Detection (CUSUM), **Isolation Forest, ***Spectral Residual -  Ani değişim ve anomaly tespiti -  Anomaly Score (0-1) -  /redet, /rd -  - -  Async -  
+
+
+
+
+--------------------------------
+bu modülün yapısı şu yapıda olmalıdır
+---------------------------------
+1- dosya yapısı agaç yapı
+2- modüllerin genel özellikleri
+3- modül için şablon
+4- modüle ait config şablonu
+5- veri kaynağı sınıf ve alt endpoid isim bilgisi
+
+=================================================================
+===	1 dosya yapısı agça yapı
+=================================================================
+analysis/
+├── analysis_base_module.py          # 
+├── analysis_core.py                 # Ana aggregator
+├── analysis_router.py               # FastAPI router
+├── analysis_schema_manager.py       # Schema yöneticisi
+├── analysis_metric_schema.yaml      # Schema tanımı
+├── trend_moment.py                  # Modül implementasyonları
+│
+├── config/					# modüller için Hybrid config Yapı
+│   ├── __init__.py
+│   ├── base.py              # Base config sınıfları
+│   ├── trend.py             # Trend-specific config
+│   ├── ...
+│   └── loader.py            # Merkezi config yükleyici
+├── analysis_base_module.py
+├── analysis_core.py
+└── ...
+
+=================================================================
+===	2- modüllerin genel özellikleri
+=================================================================
+liste modül geliştirme için kontrol çerçevesi
+---
+ön hedef:
+class tabanlı (BaseAnalysisModule),
+config tabanlı (configTrend.py),
+async & batch uyumlu,
+skorlaması açıklanabilir,
+doğru metrik formülleri,
+vektörize edilmiş,
+kalibrasyon, threshold, explain alanı,
+Prometheus / metric wrapper’ları ile uyumlu şekilde tasarlanan modüller
+
+## 🧱 1️⃣ Yapısal Tutarlılık (Structure & Naming)
+**Amaç:** Kod okunabilirliği, modüller arası standardizasyon.
+* ✅ Metrik isimlendirmeleri tutarlı (ör. `ema`, `rsi`, `macd_hist`, `kalman_trend`).
+* ✅ Class tabanlı yapı mevcut (`class TrendModule(BaseAnalysisModule): ...`).
+Interface/Abstract Base Class kullanımı
+* ✅ Her modül aynı temel fonksiyon imzasına sahip:
+  * `compute_metrics()`
+  * `aggregate_output()`
+  * `generate_report()`
+* ✅ Modül başına ayrı config dosyası:
+  * `configModülAdı.py` (örnek: `configTrend.py`)
+* ✅ Birden fazla sembol aynı anda analiz edilebilir (multi-symbol loop veya batch job destekli).
+* ✅ Paralel yapı türü (`Batch / Async / Stream`) tanımlanmış.
+
+
+
+## ⚙️ 2️⃣ Hesaplama Kalitesi & Metrik Güvenirliği
+
+**Amaç:** Hesaplanan metriklerin akademik/istatistiksel olarak doğru olması.
+* ✅ Metrikler doğru formülle hesaplanıyor (ör. RSI = 100 - 100/(1+RS)).
+* ✅ Parametrik config değerleri doğru kullanılıyor (ör. EMA period, Bollinger window).
+* ✅ Hesaplanan metriklerin gerçek ve kullanılabilir değer aralıkları var.
+* ✅ Numpy/pandas ile **vektörize edilmiş hesaplamalar** — for döngüleri minimize edilmiş.
+* ✅ İleri metrikler için uygun kütüphaneler kullanılmış:
+  * `pykalman` → Kalman Filter
+  * `pywt` → Wavelet
+  * `scipy.signal` → Hilbert / detrend
+* ✅ Metric dependency graph mevcut (ör. RSI, EMA’ya bağlıysa önce EMA hesaplanır).
+Metrik hesaplamaları için @validate_inputs gibi bir decorator kullanılabilir.
+
+
+## ⚖️ 3️⃣ Skorlama, Normalizasyon & Explainability
+**Amaç:** Modülün ürettiği skoru anlamlandırılabilir, açıklanabilir hale getirmek.
+* ✅ Skorlama formülü açıkça tanımlı (ör. `trend_score = w1*EMA + w2*RSI + ...`).
+* ✅ Ağırlıklar config içinde (`weights = {"ema":0.2, "rsi":0.2, "macd":0.3, ...}`).
+* ✅ Normalize işlemi (Z-Score, Min-Max veya Percentile) uygulanmış.
+* ✅ `explain` alanı döndürülüyor:
+* ✅ Threshold & uyarı sistemi:
+  `score > 0.7 → "bullish"`, `score < 0.3 → "bearish"`, aksi “neutral”.
+* ✅ Opsiyonel: Kalibrasyon (rolling z-score veya exponentially weighted scaling).
+Shapley değeri veya permutation importance gibi metodlar opsiyonel explainability katmanları olarak eklenebilir
+
+
+## 🚀 4️⃣ Performans & Paralel İşleme Modeli
+**Amaç:** Çoklu sembolde yüksek performans, düşük gecikme.
+* ✅ CPU-bound işlemler (`Kalman`, `GARCH`) → **ThreadPool / ProcessPool**.
+* ✅ IO-bound işlemler (API fetch, WebSocket) → **AsyncIO**.
+* ✅ Stream modüllerinde sürekli async iterator (`async for`) yapısı.
+* ✅ Vectorization ve caching aktif.
+* ✅ Rate-limit handling (Binance API → backoff, retry).
+* ✅ Resource cleanup: context manager (`with` yapısı veya async context).
+* ✅ Cache TTL (ör. Redis veya internal LRU cache) tanımlı.
+asyncio.TaskGroup (Python 3.11+) kullanımı önerilebilir, daha modern ve kontrol edilebilir.
+Opsiyonel: joblib veya ray gibi paralel işlem motorları desteklenebilir.
+
+## 🧩 5️⃣ Dokümantasyon & Validation
+**Amaç:** Modülün nasıl çalıştığı, hangi metrikleri kullandığı açıkça görülebilsin
+* ✅ Her modülün başında docstring:
+  ```python
+  """Trend & Momentum Analysis
+  Metrikler: EMA, RSI, MACD, Kalman
+  Çıktı: trend_score (0–1)
+  """
+  ```
+
+## 🧠 6️⃣ İleri Katmanlar (Opsiyonel ama güçlü)
+**Amaç:** Profesyonel seviye ölçeklenebilirlik ve izlenebilirlik.
+* ✅ Metric Dependency Graph (DAG) otomatik çözülüyor.
+* ✅ Modül bağımlılıkları schema içinde tanımlı.
+* ✅ Opsiyonel: Prometheus / Grafana entegrasyonu (metric_export).
+* ✅ AsyncIO + ThreadPool mix (CPU + IO hibrit).
+* ✅ Versiyonlama: `version = "1.0.0"` modül başında belirtilmiş.
+
+7. Güvenlik ve Veri Bütünlüğü
+# ✅ Input validation ve sanitization
+# ✅ API key management (environment variables, vault)
+# ✅ Rate limiting ve quota management
+# ✅ Data integrity checks (checksum, signature verification)
+
+8. Backtesting ve Historical Validation
+# ✅ Historical accuracy testing
+# ✅ Walk-forward analysis capability
+# ✅ Benchmark comparison (vs buy-and-hold)
+# ✅ Drawdown and risk metrics
+9. Deployment ve DevOps
+# ✅ Containerization (Dfile)
+# ✅ Health check endpoints
+# ✅ Configuration management (feature flags)
+# ✅ Rolling update capability
+
+
+=================================================================
+===	3- modül için şablon
+=================================================================
+"""
+Trend & Momentum Analysis Module
+================================
+Versiyon: 2.2.0 | Lifecycle: Production | Config: config_trend.py
+
+📊 METRİKLER:
+- EMA (9, 21, 50)
+- RSI (14)
+- MACD (12, 26, 9)
+- Kalman Filter Trend
+- Z-Score Normalization
+
+🎯 ÇIKTILAR:
+- trend_score (0-1)
+- signal (bullish/neutral/bearish)
+- momentum_strength
+- explainability components
+
+🔧 ÖZELLİKLER:
+- Vektörize hesaplama
+- Type-safe config entegrasyonu
+- Composite formula desteği
+- Prometheus metrikleri
+"""
+
+import logging
+import numpy as np
+import pandas as pd
+from datetime import datetime
+from typing import Dict, Any, Optional
+
+from prometheus_client import Counter, Gauge, Histogram
+from analysis.analysis_base_module import BaseAnalysisModule, legacy_compatible
+from analysis.config.loader import config_manager
+# Binance API imports
+from utils.binance_api.binance_a import BinanceAggregator, MultiUserBinanceAggregator
+
+
+logger = logging.getLogger(__name__)
+
+# Prometheus
+TREND_SCORE_GAUGE = Gauge('trend_score', 'Trend analysis score', ['symbol'])
+ANALYSIS_DURATION = Histogram('analysis_duration_seconds', 'Execution time', ['module'])
+ERROR_COUNTER = Counter('analysis_errors_total', 'Analysis errors', ['module'])
+
+
+@legacy_compatible
+class TrendModule(BaseAnalysisModule):
+    """Trend ve momentum analizi"""
+
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        if config is None:
+            config_data = config_manager.get_config('trend')
+            config = config_data.dict() if config_data else {}
+        super().__init__(config)
+
+        self.module_name = "TrendAnalysis"
+        self.version = "2.2.0"
+        self.dependencies = ["ema", "rsi", "macd", "kalman", "zscore"]
+
+    async def compute_metrics(self, symbol: str) -> Dict[str, Any]:
+        start = datetime.utcnow()
+        try:
+            ANALYSIS_DURATION.labels(module='trend').time()
+            data = await self._fetch_ohlcv_data(symbol, interval="1h", limit=200)
+            metrics = await self._calculate_metrics(data)
+            result = self._aggregate(metrics)
+
+            TREND_SCORE_GAUGE.labels(symbol=symbol).set(result["score"])
+            return {
+                **result,
+                "metadata": {
+                    "symbol": symbol,
+                    "timestamp": start.isoformat() + "Z",
+                    "version": self.version
+                }
+            }
+        except Exception as e:
+            ERROR_COUNTER.labels(module='trend').inc()
+            logger.error(f"Trend computation failed for {symbol}: {e}")
+            return {"score": 0.5, "signal": "neutral"}
+
+    async def _calculate_metrics(self, df: pd.DataFrame) -> Dict[str, float]:
+        """Vektörize metrik hesaplamaları"""
+        close = df['close']
+        params = self.config.get("parameters", {})
+        metrics = {}
+
+        # EMA
+        for p in params.get("ema_periods", [9, 21, 50]):
+            metrics[f"ema_{p}"] = float(close.ewm(span=p, adjust=False).mean().iloc[-1])
+
+        # RSI
+        diff = close.diff()
+        gain = diff.clip(lower=0).rolling(params.get("rsi_period", 14)).mean()
+        loss = -diff.clip(upper=0).rolling(params.get("rsi_period", 14)).mean()
+        rs = gain / (loss + 1e-9)
+        metrics["rsi"] = float((100 - (100 / (1 + rs))).iloc[-1] / 100)
+
+        # MACD
+        fast, slow, signal = params.get("macd_params", {"fast": 12, "slow": 26, "signal": 9}).values()
+        ema_fast = close.ewm(span=fast).mean()
+        ema_slow = close.ewm(span=slow).mean()
+        macd = ema_fast - ema_slow
+        macd_signal = macd.ewm(span=signal).mean()
+        metrics["macd_histogram"] = float(macd.sub(macd_signal).iloc[-1])
+
+        # Kalman & Z-score
+        metrics["kalman_trend"] = float(np.clip(np.mean(close.pct_change()) / (np.std(close.pct_change()) + 1e-9), 0, 1))
+        metrics["z_score"] = float(((close - close.rolling(20).mean()) / close.rolling(20).std()).iloc[-1])
+
+        return metrics
+
+    def _aggregate(self, metrics: Dict[str, float]) -> Dict[str, Any]:
+        weights = self.config.get("weights", {})
+        thresholds = self.config.get("thresholds", {})
+        formula = self.config.get("composite_formula")
+
+        if formula:
+            # Dinamik formül çözümleme
+            local_env = {k: v for k, v in metrics.items()}
+            try:
+                score = eval(formula, {}, local_env)
+            except Exception:
+                score = sum(v * weights.get(k, 0) for k, v in metrics.items())
+        else:
+            score = sum(v * weights.get(k, 0) for k, v in metrics.items())
+
+        score = float(np.clip(score, 0, 1))
+        signal = "bullish" if score >= thresholds["bullish"] else "bearish" if score <= thresholds["bearish"] else "neutral"
+
+        return {
+            "score": score,
+            "signal": signal,
+            "components": metrics
+        }
+
+
+
+
+
+
+
+=================================================================
+===	4- modüle ait config şablonu
+=================================================================
+"""
+Trend Analysis Module Configuration
+-----------------------------------
+Versiyon: 2.2.0 | Lifecycle: Production
+
+🔧 Bu şablon, trend analiz modülü için tip güvenli (type-safe) yapı sunar.
+Tüm parametreler modül ile tam uyumludur.
+"""
+
+from typing import Dict, Any, List, Optional
+from pydantic import BaseModel, Field, validator
+
+from analysis.config.base import BaseModuleConfig
+
+
+class TrendConfig(BaseModuleConfig):
+    """Trend modülü için tip güvenli config"""
+
+    # === PARAMETRELER ===
+    parameters: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "ema_periods": [9, 21, 50],
+            "rsi_period": 14,
+            "macd_params": {"fast": 12, "slow": 26, "signal": 9},
+            "kalman_observation_noise": 0.1,
+            "zscore_window": 20
+        },
+        description="Trend analizinde kullanılacak parametre seti"
+    )
+
+    # === AĞIRLIKLAR ===
+    weights: Dict[str, float] = Field(
+        default_factory=lambda: {
+            "ema_9": 0.15,
+            "ema_21": 0.15,
+            "ema_50": 0.10,
+            "rsi": 0.20,
+            "macd_histogram": 0.25,
+            "kalman_trend": 0.15
+        },
+        description="Her metrik için ağırlık dağılımı"
+    )
+
+    # === EŞİKLER ===
+    thresholds: Dict[str, float] = Field(
+        default_factory=lambda: {
+            "bullish": 0.65,
+            "bearish": 0.35,
+            "strong_trend": 0.75,
+            "weak_trend": 0.25
+        },
+        description="Sinyal üretiminde kullanılacak eşikler"
+    )
+
+    # === NORMALİZASYON ===
+    normalization: Dict[str, str] = Field(
+        default_factory=lambda: {"method": "zscore"},
+        description="Normalizasyon yöntemi"
+    )
+
+    # === PERFORMANS AYARLARI ===
+    performance: Dict[str, Any] = Field(
+        default_factory=lambda: {"cache_ttl": 300, "timeout": 30, "max_retries": 3},
+        description="Performans ve önbellek ayarları"
+    )
+
+    # === BİLEŞİK FORMÜL (Opsiyonel) ===
+    composite_formula: Optional[str] = Field(
+        default="0.25*macd_histogram + 0.2*rsi + 0.2*ema_21 + 0.15*kalman_trend + 0.1*z_score + 0.1*ema_9",
+        description="Ağırlıklı metrikleri birleştiren özel formül (opsiyonel)"
+    )
+
+    # === VALIDATORS ===
+    @validator('weights')
+    def validate_weights(cls, v):
+        total = sum(v.values())
+        if not 0.99 <= total <= 1.01:
+            raise ValueError(f"Weights must sum to 1.0, got {total:.3f}")
+        return v
+
+    @validator('thresholds')
+    def validate_thresholds(cls, v):
+        if 'bullish' in v and 'bearish' in v:
+            if v['bullish'] <= v['bearish']:
+                raise ValueError('Bullish threshold must be greater than bearish threshold')
+        return v
+
+
+# === CONFIG INSTANCE ===
+TREND_CONFIG = TrendConfig(
+    module_name="TrendAnalysis",
+    version="2.2.0",
+    lifecycle="production"
+)
+
+
+
+
+
+
+=================================================================
+===	5- veri kaynağı sınıf ve alt endpoid isim bilgisi
+=================================================================
+class ResponseCache:
+    def cache_key(user_id, endpoint, params):
+
+class MultiUserAggregatorSettings:
+    # Multi-user configuration for Binance API aggregator.
+    # Her kullanıcı için ayrı HTTP client ve circuit breaker yönetimi.
+    # Enhanced with lazy initialization and async safety
+    def __init__(self):
+    def get_instance(cls):
+    async def _check_rate_limits(self, user_id):
+        # Check and enforce rate limits
+    async def ensure_cleanup_task(self):
+        # Thread-safe lazy initialization of cleanup task
+    async def _start_cleanup_task(self):
+        # Async cleanup task initialization
+    def _handle_cleanup_task_exception(self, task):
+        # Cleanup task exception handler
+    async def get_user_client(self, user_id, retry_count):
+        # ✅ PERFORMANS + GÜVENLİK
+    async def _cleanup_inactive_users(self):
+        # Inactive user'ları temizle (30dk TTL)
+    async def _evict_least_used_user(self):
+        # LRU cache eviction
+    def _validate_user_id(user_id):
+        # User ID validation
+    def _is_valid_api_key_format(api_key):
+        # API key format validation
+    def _mask_api_key(api_key):
+        # API key masking for logging
+    def _get_user_lock(self, user_id):
+        # Get or create user-specific lock.
+    async def get_user_circuit_breaker(self, user_id):
+        # Get or create user-specific circuit breaker.
+    async def cleanup_user_resources(self, user_id):
+        # Cleanup user-specific resources.
+    async def get_all_active_users(self):
+        # Get list of all active users with clients.
+    def get_metrics(self):
+        # Performance metrics getter
+    async def close(self):
+        # Cleanup all resources and tasks.
+
+class MultiUserPublicApi:
+    # Multi-user compatible Public API.
+    # Public endpoints don't require user authentication but can track user context.
+    def __init__(self):
+
+class MultiUserPrivateApi:
+    # Multi-user Private API with enhanced user management.
+    def __init__(self):
+    async def _get_user_base_client(self, user_id):
+        # Get user-specific base client.
+
+class MultiUserBinanceAggregator:
+    # Enhanced aggregator with proper async lifecycle management
+    def __init__(self):
+    def get_instance(cls):
+        # Sync singleton getter - for backward compatibility
+    async def create(cls):
+        # Async factory method - recommended for new code
+    async def start(self):
+        # Explicit startup - required before use
+    async def health_check(self, user_id):
+        # ✅ Startup kontrolü ekle
+    async def validate_user_credentials(self, user_id):
+        # Validate user's Binance credentials.
+    async def get_user_status(self, user_id):
+        # ✅ DAHA DETAYLI USER STATUS
+    async def get_all_users_status(self):
+        # Get status for all active users.
+    async def cleanup_user(self, user_id):
+        # Cleanup resources for a specific user.
+    def get_stats(self):
+        # Get aggregator statistics.
+    async def close(self):
+        # Cleanup all resources.
+    async def __aenter__(self):
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+
+class BinanceAggregator:
+    # Backward compatibility wrapper
+    # Legacy compatibility with auto-start
+    def __init__(self, http_client):
+    async def _ensure_started(self):
+        # Auto-start mechanism for legacy code
+    async def get_instance(cls, http_client):
+        # Async singleton for legacy code
+    def public(self):
+    def private(self):
+    async def health_check(self):
+    def get_stats(self):
+
