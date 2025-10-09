@@ -25,11 +25,12 @@ app.include_router(analysis_router)
 """
 
 from fastapi import APIRouter, Query, HTTPException
-from schema_loader import load_metrics_schema, load_module_run_function
 from typing import Optional
+from .schema_manager import load_analysis_schema, load_module_run_function
+
 
 router = APIRouter()
-schema = load_metrics_schema()
+schema = load_analysis_schema()
 
 # Tüm modülleri yükleyip route oluştur
 for module in schema.modules:

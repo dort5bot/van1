@@ -4,6 +4,7 @@ Analysis Aggregator Core Module
 ================================
 Merkezi analiz koordinatörü - tüm analiz modüllerini yönetir, sonuçları aggregate eder.
 AIogram 3.x uyumlu + Router pattern + Thread-safe + Memory-leak korumalı
+MetricsSchema > AnalysisSchema
 """
 
 import asyncio
@@ -16,7 +17,7 @@ import time
 import hashlib
 
 # Schema imports
-from .schema_manager import load_metrics_schema, load_module_run_function, MetricsSchema, Module
+from .schema_manager import load_analysis_schema, load_module_run_function, AnalysisSchema, Module
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -77,7 +78,7 @@ class AnalysisAggregator:
         if self._initialized:
             return
             
-        self.schema: Optional[MetricsSchema] = None
+        self.schema: Optional[AnalysisSchema] = None
         self._module_cache: Dict[str, Any] = {}
         self._result_cache: Dict[str, AggregatedResult] = {}
         self._execution_locks: Dict[str, asyncio.Lock] = {}
@@ -98,7 +99,7 @@ class AnalysisAggregator:
             return
             
         self._is_running = True
-        self.schema = load_metrics_schema()
+        self.schema = load_analysis_schema()
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
         logger.info("AnalysisAggregator started with periodic cleanup")
     
@@ -428,6 +429,24 @@ aggregator = AnalysisAggregator()
 async def get_aggregator() -> AnalysisAggregator:
     """Dependency injection için aggregator instance'ı"""
     return aggregator
+
+
+# analysis_core.py içinde modül durum kontrolü
+async def check_module_health(self) -> Dict[str, bool]:
+    """Tüm modüllerin sağlık durumunu kontrol et"""
+    health_status = {}
+    
+    for module in self.schema.modules:
+        try:
+            run_function = await self._load_module_function(module.file)
+            # Test çalıştırma (sembol olmadan)
+            health_status[module.name] = True
+        except Exception as e:
+            logger.warning(f"Module health check failed for {module.name}: {e}")
+            health_status[module.name] = False
+    
+    return health_status
+    
 
 # FastAPI Router için kullanım örneği
 """

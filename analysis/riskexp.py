@@ -1,5 +1,6 @@
 # analysis/riskexp.py
 """
+# analysis/riskexp.py
 Risk & Exposure Management Module
 ==================================
 Dinamik risk kontrolü ve pozisyon exposure yönetimi.
@@ -40,7 +41,7 @@ from scipy import stats
 from scipy.optimize import minimize
 
 # Binance API imports
-from utils.binance_api.binance_a import MultiUserBinanceAggregator
+from utils.binance_api.binance_a import BinanceAggregator, MultiUserBinanceAggregator
 
 logger = logging.getLogger(__name__)
 
@@ -167,12 +168,13 @@ class RiskAnalyzer:
         
         logger.info("RiskAnalyzer stopped and cleaned up")
     
+    # _get_symbol_lock methodunu düzelt:
     def _get_symbol_lock(self, symbol: str) -> asyncio.Lock:
-        """Get or create symbol-specific lock"""
-        async with self._global_lock:
-            if symbol not in self._locks:
-                self._locks[symbol] = asyncio.Lock()
-            return self._locks[symbol]
+        """Get or create symbol-specific lock - SYNC VERSION"""
+        if symbol not in self._locks:
+            self._locks[symbol] = asyncio.Lock()
+        return self._locks[symbol]
+        
     
     def _get_cache_key(self, symbol: str, timeframe: str = '1h') -> str:
         """Generate cache key for symbol and timeframe"""

@@ -1,4 +1,5 @@
 # analysis_schema.yaml
+# eski adı:MetricsSchema
 # Binance + External Multi-Factor Analysis Framework
 # ==================================================
 # Her modül, kendi metrikleri, endpointleri, metodları ve çıktı yapısıyla tanımlıdır.
@@ -179,7 +180,7 @@ modules:
     output_type: "Macro Score (0–1)"
 
   - name: "Risk & Exposure Management"
-    file: "risk.py"
+    file: "riskexp.py"
     command: "/risk"
     api_type: "Spot + Futures Public"
     endpoints:
@@ -266,7 +267,7 @@ modules:
     output_type: "Allocation Weights"
 
   - name: "Anomaly & Regime Change Detection"
-    file: "anomdetect.py"
+    file: "regimdetect.py"
     command: "/anomaly"
     api_type: "Spot + Futures"
     endpoints:

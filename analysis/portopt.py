@@ -31,7 +31,7 @@ from scipy.optimize import minimize
 import warnings
 
 # Binance API için import
-from utils.binance_api.binance_a import MultiUserBinanceAggregator
+from utils.binance_api.binance_a import BinanceAggregator, MultiUserBinanceAggregator
 
 # Logging configuration
 logger = logging.getLogger(__name__)
@@ -365,8 +365,8 @@ class BlackLittermanOptimizer(PortfolioOptimizer):
                     recent_return = (closes[-1] - closes[0]) / closes[0]
                     
                     # Momentum-based view
-                    if abs(recent_return) > 0.1:  %10'den fazla hareket
-                        views[symbol] = recent_return * 0.5  %Damping uygula
+                    if abs(recent_return) > 0.1:  #%10'den fazla hareket
+                        views[symbol] = recent_return * 0.5  #%Damping uygula
                         
             except Exception as e:
                 logger.warning(f"Failed to generate view for {symbol}: {str(e)}")
@@ -469,6 +469,11 @@ async def run(symbol: str, priority: Optional[str] = None, user_id: Optional[int
     start_time = datetime.now()
     
     try:
+        # Priority validation ekle:
+        if priority not in [None, "*", "**", "***"]:
+            priority = "*"  # Default değer
+        
+                
         # Varsayılan portfolio sembolleri
         portfolio_symbols = [
             "BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT",
@@ -542,6 +547,7 @@ async def run(symbol: str, priority: Optional[str] = None, user_id: Optional[int
         
         return {
             "symbol": symbol,
+            "status": "error", 
             "method": "Failed",
             "allocation": {},
             "diversification_score": 0.0,

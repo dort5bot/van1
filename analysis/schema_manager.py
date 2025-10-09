@@ -7,7 +7,7 @@ Avantaj: Router ve core modüllerinden bağımsız çalışabilir
 
 | Özellik                      | Açıklama                                             |
 | ---------------------------- | ---------------------------------------------------- |
-| 🧩 Tam `pydantic` uyumu      | `metrics_schema.yaml` ile birebir eşleşir            |
+| 🧩 Tam `pydantic` uyumu      | `analysis_schema.yaml` ile birebir eşleşir            |
 | 🎛️ `priority` filtresi      | `*`, `**`, `***` seviyelerinde filtreleme fonksiyonu |
 | 🚀 Kullanıcı seviyesi seçimi | "basic", "pro", "expert" gibi user level uyarlaması  |
 | 🔍 Modül & metrik arama      | Komut, dosya ya da isimle modül bulma                |
@@ -48,13 +48,14 @@ class Metric(BaseModel):
     name: str
     priority: PriorityLevel
 
+# analysis_schema.yaml için modül
 class Module(BaseModel):
     name: str
     file: str
     command: str
     api_type: str
     endpoints: List[str]
-    methods: List[Literal["GET", "POST", "PUT", "DELETE"]]
+    methods: List[Literal["GET", "POST", "PUT", "DELETE", "WebSocket"]]
 
     classical_metrics: Optional[List[Union[str, Metric]]] = []
     professional_metrics: Optional[List[Metric]] = []
@@ -63,21 +64,21 @@ class Module(BaseModel):
     objective: Optional[str] = None
     output_type: Optional[str] = None
 
-class MetricsSchema(BaseModel):
+class AnalysisSchema(BaseModel):
     modules: List[Module]
 
 
 # --- Yükleyici Fonksiyon ---
 
-def load_metrics_schema(yaml_path: str = "analysis/metrics_schema.yaml") -> MetricsSchema:
+def load_analysis_schema(yaml_path: str = "analysis/analysis_schema.yaml") -> AnalysisSchema:
     with open(yaml_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
-    return MetricsSchema(**data)
+    return AnalysisSchema(**data)
 
 
 # --- Filtreleme & Yardımcı Fonksiyonlar ---
 
-def filter_modules_by_priority(schema: MetricsSchema, priority: PriorityLevel) -> List[Module]:
+def filter_modules_by_priority(schema: AnalysisSchema, priority: PriorityLevel) -> List[Module]:
     """
     Verilen priority seviyesine göre modülleri filtreler (sadece ilgili metrik içerenler döner)
     """
@@ -93,13 +94,13 @@ def get_metrics_by_priority(module: Module, priority: PriorityLevel) -> List[Met
     """
     return [m for m in (module.professional_metrics or []) if m.priority == priority]
 
-def get_module_by_command(schema: MetricsSchema, command: str) -> Optional[Module]:
+def get_module_by_command(schema: AnalysisSchema, command: str) -> Optional[Module]:
     return next((m for m in schema.modules if m.command == command), None)
 
-def get_module_by_file(schema: MetricsSchema, file: str) -> Optional[Module]:
+def get_module_by_file(schema: AnalysisSchema, file: str) -> Optional[Module]:
     return next((m for m in schema.modules if m.file == file), None)
 
-def get_module_by_name(schema: MetricsSchema, name: str) -> Optional[Module]:
+def get_module_by_name(schema: AnalysisSchema, name: str) -> Optional[Module]:
     return next((m for m in schema.modules if m.name == name), None)
 
 
@@ -134,7 +135,7 @@ USER_LEVEL_PRIORITY = {
     "expert": "***"
 }
 
-def get_modules_for_user_level(schema: MetricsSchema, level: str) -> List[Module]:
+def get_modules_for_user_level(schema: AnalysisSchema, level: str) -> List[Module]:
     """
     Kullanıcı seviyesine göre modülleri döner
     """
@@ -147,7 +148,7 @@ def get_modules_for_user_level(schema: MetricsSchema, level: str) -> List[Module
 # --- Test Örneği ---
 
 if __name__ == "__main__":
-    schema = load_metrics_schema()
+    schema = load_analysis_schema()
 
     print("📊 Tüm modüller:")
     for module in schema.modules:

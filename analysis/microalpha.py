@@ -28,6 +28,7 @@ High-Frequency Z-Score: Statistical anomaly detection
 
 
 """
+# analysis/microalpha.py
 
 import asyncio
 import logging
@@ -44,7 +45,7 @@ import websockets
 from datetime import datetime, timedelta
 
 # Binance API imports
-from utils.binance_api.binance_a import MultiUserBinanceAggregator
+from utils.binance_api.binance_a import BinanceAggregator, MultiUserBinanceAggregator
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +252,7 @@ class WebSocketManager:
             if self._is_running:
                 await self._reconnect_symbol(symbol)
     
-    def get_recent_ticks(self, symbol: str, lookback_ms: int = 5000) -> List[TickData]:
+    async def get_recent_ticks(self, symbol: str, lookback_ms: int = 5000) -> List[TickData]:
         """Get recent ticks within lookback period"""
         async with self._get_symbol_lock(symbol):
             current_time = int(time.time() * 1000)
@@ -261,7 +262,7 @@ class WebSocketManager:
             ]
             return recent_ticks
     
-    def get_latest_orderbook(self, symbol: str) -> Optional[OrderBookSnapshot]:
+    async def get_latest_orderbook(self, symbol: str) -> Optional[OrderBookSnapshot]:
         """Get latest order book snapshot"""
         async with self._get_symbol_lock(symbol):
             if self.orderbook_buffers[symbol]:
@@ -674,8 +675,8 @@ class MicroAlphaAnalyzer:
             async with self._get_symbol_lock(symbol):
                 # Get recent data based on aggregation period
                 lookback_ms = self._get_lookback_ms(aggregation)
-                recent_ticks = self.ws_manager.get_recent_ticks(symbol, lookback_ms)
-                latest_orderbook = self.ws_manager.get_latest_orderbook(symbol)
+                recent_ticks = await self.ws_manager.get_recent_ticks(symbol, lookback_ms)
+                latest_orderbook = await self.ws_manager.get_latest_orderbook(symbol)
                 
                 if not recent_ticks or not latest_orderbook:
                     raise ValueError(f"Insufficient real-time data for {symbol}")

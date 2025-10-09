@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from collections import deque
 
 # Binance API imports
-from utils.binance_api.binance_a import MultiUserBinanceAggregator
+from utils.binance_api.binance_a import BinanceAggregator, MultiUserBinanceAggregator
 
 logger = logging.getLogger(__name__)
 

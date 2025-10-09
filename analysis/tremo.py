@@ -23,7 +23,9 @@ from contextlib import asynccontextmanager
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'utils', 'binance_api'))
-from binance_a import BinanceAggregator
+
+from utils.binance_api.binance_a import BinanceAggregator, MultiUserBinanceAggregator
+
 
 # Configure logging
 logger = logging.getLogger(__name__)

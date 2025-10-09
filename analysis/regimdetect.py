@@ -47,7 +47,7 @@ except ImportError:
     logging.warning("scikit-learn not available, some methods will be disabled")
 
 # Binance API
-from utils.binance_api.binance_a import MultiUserBinanceAggregator
+from utils.binance_api.binance_a import BinanceAggregator, MultiUserBinanceAggregator
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -286,7 +286,7 @@ class RegimeDetector:
                 Tuple of (anomaly_scores, saliency_map)
             """
             if len(data) < self.window_size * 2:
-                return np.zeros(len(data)), np.zeros(len(data)))
+                return np.zeros(len(data)), np.zeros(len(data))
             
             # Fast Fourier Transform
             fft = np.fft.fft(data)
